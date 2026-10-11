@@ -1,6 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
+
+import 'app_backend.dart';
+
 const bool gamerLockerMicrosoftStoreBuild = bool.fromEnvironment(
   'MICROSOFT_STORE_BUILD',
 );
@@ -16,6 +20,7 @@ class GamerLockerUpdateInfo {
   final String releaseName;
   final String installerUrl;
   final String releaseUrl;
+  final String? sha256Digest;
 
   const GamerLockerUpdateInfo({
     required this.version,
@@ -23,10 +28,31 @@ class GamerLockerUpdateInfo {
     required this.releaseName,
     required this.installerUrl,
     required this.releaseUrl,
+    this.sha256Digest,
   });
 }
 
 class GamerLockerUpdateService {
+  static const privateUpdates = bool.fromEnvironment('PRIVATE_UPDATES');
+  static Uri get _privateEndpoint =>
+      Uri.parse('${AppBackend.supabaseUrl}/functions/v1/private-updates');
+
+  static Future<void> _authorize(HttpClientRequest request) async {
+    if (!AppBackend.configured) throw StateError('Backend nao configurado.');
+    var session = AppBackend.client.auth.currentSession;
+    if (session == null) throw StateError('Entre na sua conta para atualizar.');
+    if (session.isExpired) {
+      session = (await AppBackend.client.auth.refreshSession()).session;
+    }
+    if (session == null) throw StateError('Sessao expirada.');
+    request.followRedirects = false;
+    request.headers.set(
+      HttpHeaders.authorizationHeader,
+      'Bearer ${session.accessToken}',
+    );
+    request.headers.set('apikey', AppBackend.supabasePublishableKey);
+  }
+
   static const _releasesRepository = String.fromEnvironment(
     'UPDATES_REPOSITORY',
     defaultValue: 'GamerLocker/gamerlocker-releases',
@@ -61,7 +87,10 @@ class GamerLockerUpdateService {
       ..userAgent = 'GamerLocker-Updater/$gamerLockerCurrentVersion';
 
     try {
-      final request = await client.getUrl(Uri.parse(_releasesApi));
+      final request = await client.getUrl(
+        privateUpdates ? _privateEndpoint : Uri.parse(_releasesApi),
+      );
+      if (privateUpdates) await _authorize(request);
       request.headers.set(
         HttpHeaders.acceptHeader,
         'application/vnd.github+json',
@@ -128,14 +157,18 @@ class GamerLockerUpdateService {
 
             if (uri != null &&
                 uri.scheme == 'https' &&
-                uri.host.toLowerCase() == 'github.com') {
+                (privateUpdates
+                    ? uri.origin == _privateEndpoint.origin &&
+                          uri.path == _privateEndpoint.path
+                    : uri.host.toLowerCase() == 'github.com')) {
               installerUrl = url;
               break;
             }
           }
         }
 
-        if (installerUrl == null) {
+        if (installerUrl == null ||
+            (privateUpdates && assetDigest(release, installerUrl) == null)) {
           continue;
         }
 
@@ -145,6 +178,7 @@ class GamerLockerUpdateService {
           releaseName: (release['name'] ?? tagName).toString(),
           installerUrl: installerUrl,
           releaseUrl: (release['html_url'] ?? '').toString(),
+          sha256Digest: assetDigest(release, installerUrl),
         );
 
         if (best == null ||
@@ -166,6 +200,12 @@ class GamerLockerUpdateService {
     required void Function(double? progress) onProgress,
   }) async {
     final uri = Uri.parse(update.installerUrl);
+    if (privateUpdates &&
+        (uri.scheme != 'https' ||
+            uri.origin != _privateEndpoint.origin ||
+            uri.path != _privateEndpoint.path)) {
+      throw const HttpException('Origem da atualizacao invalida.');
+    }
 
     final client = HttpClient()
       ..connectionTimeout = const Duration(seconds: 15)
@@ -184,6 +224,7 @@ class GamerLockerUpdateService {
 
     try {
       final request = await client.getUrl(uri);
+      if (privateUpdates) await _authorize(request);
       final response = await request.close().timeout(
         const Duration(seconds: 20),
       );
@@ -224,6 +265,17 @@ class GamerLockerUpdateService {
         throw const FileSystemException(
           'O tamanho do instalador baixado nao confere.',
         );
+      }
+
+      if (privateUpdates) {
+        final digest = update.sha256Digest;
+        if (digest == null ||
+            (await sha256.bind(installer.openRead()).first).toString() !=
+                digest) {
+          throw const FileSystemException(
+            'A integridade do instalador nao confere.',
+          );
+        }
       }
 
       onProgress(1);
@@ -275,7 +327,7 @@ $setupArgs = @(
   ('/LOG="' + $env:GAMERLOCKER_UPDATE_LOG + '"')
 )
 
-Start-Process `
+Start-Process -WindowStyle Hidden `
   -FilePath $env:GAMERLOCKER_UPDATE_SETUP `
   -ArgumentList $setupArgs
 
@@ -314,6 +366,18 @@ exit 0
         result.exitCode,
       );
     }
+  }
+
+  static String? assetDigest(Map<String, dynamic> release, String? url) {
+    for (final asset in release['assets'] as List) {
+      if (asset is Map && asset['browser_download_url'] == url) {
+        final digest = asset['digest']?.toString() ?? '';
+        if (RegExp(r'^sha256:[a-fA-F0-9]{64}$').hasMatch(digest)) {
+          return digest.substring(7).toLowerCase();
+        }
+      }
+    }
+    return null;
   }
 
   static String? _normalizeVersion(String value) {

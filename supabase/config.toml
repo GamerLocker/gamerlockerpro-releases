@@ -1,0 +1,3 @@
+[functions.private-updates]
+# Handler validates every session against Supabase Auth, including new signing keys.
+verify_jwt = false

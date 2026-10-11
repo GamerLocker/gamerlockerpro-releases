@@ -4,6 +4,7 @@ import 'package:flutter/material.dart' hide Text, SelectableText;
 
 import 'app_localizations.dart';
 import 'update_service.dart';
+import 'app_backend.dart';
 
 class GamerLockerUpdateGate extends StatefulWidget {
   final Widget child;
@@ -16,10 +17,18 @@ class GamerLockerUpdateGate extends StatefulWidget {
 
 class _GamerLockerUpdateGateState extends State<GamerLockerUpdateGate> {
   bool _checked = false;
+  StreamSubscription<dynamic>? _authSubscription;
 
   @override
   void initState() {
     super.initState();
+    if (GamerLockerUpdateService.privateUpdates && AppBackend.configured) {
+      _authSubscription = AppBackend.client.auth.onAuthStateChange.listen((
+        event,
+      ) {
+        if (event.session != null && mounted) unawaited(_checkUpdate());
+      });
+    }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_checkUpdate());
@@ -28,6 +37,12 @@ class _GamerLockerUpdateGateState extends State<GamerLockerUpdateGate> {
 
   Future<void> _checkUpdate() async {
     if (_checked || !GamerLockerUpdateService.shouldCheckAutomatically) {
+      return;
+    }
+
+    if (GamerLockerUpdateService.privateUpdates &&
+        (!AppBackend.configured ||
+            AppBackend.client.auth.currentSession == null)) {
       return;
     }
 
@@ -119,6 +134,12 @@ class _GamerLockerUpdateGateState extends State<GamerLockerUpdateGate> {
     if (shouldUpdate == true && mounted) {
       await _downloadAndUpdate(update);
     }
+  }
+
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> _downloadAndUpdate(GamerLockerUpdateInfo update) async {
