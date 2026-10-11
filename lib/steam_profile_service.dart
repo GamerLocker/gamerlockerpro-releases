@@ -56,6 +56,8 @@ class SteamPublicProfile {
 
 class SteamProfileService {
   SteamProfileService._();
+  static String loginReference(String login) =>
+      'steam-login:${login.trim().toLowerCase()}';
 
   static const int _steamId64Base = 76561197960265728;
 
@@ -78,7 +80,8 @@ class SteamProfileService {
     try {
       final file = _profilesFile;
       if (!file.existsSync()) return;
-      final profiles = jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
+      final profiles =
+          jsonDecode(file.readAsStringSync()) as Map<String, dynamic>;
       for (final entry in profiles.entries) {
         final value = Map<String, dynamic>.from(entry.value as Map);
         final id = value['steamId64']?.toString() ?? '';
@@ -100,9 +103,11 @@ class SteamProfileService {
 
   static bool _validAuthenticatedAvatar(String id, String avatar) {
     final uri = Uri.tryParse(avatar);
-    return RegExp(r'^\d{17}$').hasMatch(id) && uri != null &&
+    return RegExp(r'^\d{17}$').hasMatch(id) &&
+        uri != null &&
         uri.scheme == 'https' &&
-        (uri.host == 'steamstatic.com' || uri.host.endsWith('.steamstatic.com'));
+        (uri.host == 'steamstatic.com' ||
+            uri.host.endsWith('.steamstatic.com'));
   }
 
   static SteamPublicProfile? cachedProfile(String reference) {
@@ -117,7 +122,10 @@ class SteamProfileService {
     String? displayName,
     bool persist = true,
   }) {
-    if (reference.trim().isEmpty || !_validAuthenticatedAvatar(steamId64, avatarUrl)) return;
+    if (reference.trim().isEmpty ||
+        !_validAuthenticatedAvatar(steamId64, avatarUrl)) {
+      return;
+    }
     _loadLocalProfiles();
     final key = reference.trim();
     final previous = _lastSuccessful[key];
@@ -126,7 +134,9 @@ class SteamProfileService {
       steamId64: steamId64,
       displayName: displayName?.trim().isNotEmpty == true
           ? displayName!.trim()
-          : sameAccount ? previous!.displayName : steamId64,
+          : sameAccount
+          ? previous!.displayName
+          : steamId64,
       avatarUrl: avatarUrl,
       onlineState: sameAccount ? previous!.onlineState : 'offline',
       stateMessage: sameAccount ? previous!.stateMessage : '',
@@ -143,10 +153,17 @@ class SteamProfileService {
       }
       final file = _profilesFile;
       file.parent.createSync(recursive: true);
-      file.writeAsStringSync(jsonEncode(_lastSuccessful.map((key, value) => MapEntry(key, {
-        'steamId64': value.steamId64, 'displayName': value.displayName,
-        'avatarUrl': value.avatarUrl,
-      }))));
+      file.writeAsStringSync(
+        jsonEncode(
+          _lastSuccessful.map(
+            (key, value) => MapEntry(key, {
+              'steamId64': value.steamId64,
+              'displayName': value.displayName,
+              'avatarUrl': value.avatarUrl,
+            }),
+          ),
+        ),
+      );
     } catch (_) {
       // Current in-memory profile still updates if disk caching fails.
     }
@@ -163,6 +180,9 @@ class SteamProfileService {
     if (key.isEmpty) {
       return Future.value(null);
     }
+    if (key.startsWith('steam-login:') && !_lastSuccessful.containsKey(key)) {
+      return Future.value(null);
+    }
 
     if (forceRefresh ||
         (_expiresAt[key] != null && DateTime.now().isAfter(_expiresAt[key]!))) {
@@ -171,7 +191,9 @@ class SteamProfileService {
 
     return _cache.putIfAbsent(key, () async {
       final revision = _revisions[key] ?? 0;
-      final profile = await _fetchProfile(_lastSuccessful[key]?.steamId64 ?? key);
+      final profile = await _fetchProfile(
+        _lastSuccessful[key]?.steamId64 ?? key,
+      );
       if ((_revisions[key] ?? 0) != revision) return _lastSuccessful[key];
       if (profile != null) {
         final previous = _lastSuccessful[key];
@@ -224,9 +246,10 @@ class SteamProfileService {
         return null;
       }
 
-      final xml = await utf8.decoder.bind(response).join().timeout(
-        const Duration(seconds: 8),
-      );
+      final xml = await utf8.decoder
+          .bind(response)
+          .join()
+          .timeout(const Duration(seconds: 8));
 
       final displayName = _readTag(xml, 'steamID');
       final fullAvatar = _readTag(xml, 'avatarFull');
@@ -234,8 +257,8 @@ class SteamProfileService {
       final avatar = fullAvatar.isNotEmpty
           ? fullAvatar
           : mediumAvatar.isNotEmpty
-              ? mediumAvatar
-              : _readTag(xml, 'avatarIcon');
+          ? mediumAvatar
+          : _readTag(xml, 'avatarIcon');
       final onlineState = _readTag(xml, 'onlineState');
       final stateMessage = _readTag(xml, 'stateMessage');
       final steamId64 = _readTag(xml, 'steamID64');

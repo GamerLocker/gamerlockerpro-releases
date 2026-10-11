@@ -116,6 +116,13 @@ class AccountEntry {
        security = security ?? <String, bool>{};
 
   String get steamProfile {
+    final login = fields['Login']?.trim() ?? '';
+    if (type == 'Steam' && login.isNotEmpty) {
+      final authenticated = SteamProfileService.cachedProfile(
+        SteamProfileService.loginReference(login),
+      )?.steamId64 ?? SteamCooldownService.cached(login)?.steamId64;
+      if (authenticated != null && authenticated.isNotEmpty) return authenticated;
+    }
     final profile = fields['Perfil Steam']?.trim() ?? '';
 
     if (profile.isNotEmpty) {
@@ -128,6 +135,9 @@ class AccountEntry {
   // Mantido por compatibilidade com os pontos existentes do app.
   // O valor pode ser SteamID, vanity ID ou URL completa do perfil.
   String get steamId => steamProfile;
+  String get steamProfileReference => steamProfile.isNotEmpty
+      ? steamProfile
+      : SteamProfileService.loginReference(fields['Login'] ?? '');
 
   bool get hasSteamProfile => type == 'Steam' && steamProfile.isNotEmpty;
 
@@ -2541,9 +2551,9 @@ class _AccountCardState extends State<AccountCard> {
                             ),
                           ],
                           if (!collapsed) ...[
-                            if (account.hasSteamProfile) ...[
+                            if (account.type == 'Steam') ...[
                               const SizedBox(height: 14),
-                              SteamProfileSummary(steamId: account.steamId),
+                              SteamProfileSummary(steamId: account.steamProfileReference),
                               const SizedBox(height: 10),
                               SteamCooldownSummary(account: account),
                             ],
@@ -2759,7 +2769,7 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
     var next = await SteamCooldownService.check(
       username: login,
       password: password,
-      profileReference: widget.account.steamId,
+      profileReference: widget.account.steamProfileReference,
     );
 
     if (!mounted) return;
@@ -2775,7 +2785,7 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
         next = await SteamCooldownService.check(
           username: login,
           password: password,
-          profileReference: widget.account.steamId,
+          profileReference: widget.account.steamProfileReference,
           authCode: mobile ? null : code,
           twoFactorCode: mobile ? code : null,
         );
@@ -2994,7 +3004,9 @@ class _SteamProfileSummaryState extends State<SteamProfileSummary> {
 
         if (profile == null) {
           return Text(
-            'Perfil Steam vinculado',
+            widget.steamId.startsWith('steam-login:')
+                ? 'Clique em Verificar para identificar o perfil Steam.'
+                : 'Perfil Steam vinculado',
             style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
           );
         }
@@ -3212,7 +3224,7 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
                       ),
                   ],
                 ),
-                if (account.hasSteamProfile) ...[
+                if (account.type == 'Steam') ...[
                   const SizedBox(height: 18),
                   Container(
                     width: double.infinity,
@@ -3225,7 +3237,7 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        SteamProfileSummary(steamId: account.steamId),
+                        SteamProfileSummary(steamId: account.steamProfileReference),
                         const SizedBox(height: 10),
                         SteamCooldownSummary(account: account),
                       ],

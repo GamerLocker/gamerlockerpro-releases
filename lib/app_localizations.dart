@@ -302,6 +302,8 @@ final Map<String, String> _english = <String, String>{
   'Plano': 'Plan',
   'Seu plano': 'Your plan',
   'Ativo': 'Active',
+  'Clique em Verificar para identificar o perfil Steam.':
+      'Click Verify to identify the Steam profile.',
   'PRO vitalício — sem vencimento': 'Lifetime PRO — no expiration',
   'Seu período PRO terminou.': 'Your PRO period has ended.',
   'Válido até': 'Valid until',

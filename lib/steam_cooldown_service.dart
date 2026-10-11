@@ -40,7 +40,8 @@ class SteamCooldownResult {
   factory SteamCooldownResult.fromJson(Map<String, dynamic> json) {
     return SteamCooldownResult(
       status: json['status']?.toString() ?? 'error',
-      penaltySeconds: int.tryParse(json['penaltySeconds']?.toString() ?? '') ?? 0,
+      penaltySeconds:
+          int.tryParse(json['penaltySeconds']?.toString() ?? '') ?? 0,
       penaltyReason: int.tryParse(json['penaltyReason']?.toString() ?? '') ?? 0,
       vacBanned: json['vacBanned'] == true,
       message: json['message']?.toString(),
@@ -90,16 +91,23 @@ class SteamCooldownService {
         final raw = Map<String, dynamic>.from(entry.value as Map);
         final status = raw['status']?.toString() ?? 'error';
         final expiresAt = int.tryParse(raw['expiresAt']?.toString() ?? '') ?? 0;
-        final savedPenalty = int.tryParse(raw['penaltySeconds']?.toString() ?? '') ?? 0;
-        final remaining = expiresAt > 0 ? (expiresAt - now).clamp(0, 2147483647) : savedPenalty;
+        final savedPenalty =
+            int.tryParse(raw['penaltySeconds']?.toString() ?? '') ?? 0;
+        final remaining = expiresAt > 0
+            ? (expiresAt - now).clamp(0, 2147483647)
+            : savedPenalty;
 
         _cache[entry.key] = SteamCooldownResult(
           status: status,
           penaltySeconds: remaining,
-          penaltyReason: int.tryParse(raw['penaltyReason']?.toString() ?? '') ?? 0,
+          penaltyReason:
+              int.tryParse(raw['penaltyReason']?.toString() ?? '') ?? 0,
           vacBanned: raw['vacBanned'] == true,
           message: raw['message']?.toString(),
           guardType: raw['guardType']?.toString(),
+          steamId64: raw['steamId64']?.toString(),
+          avatarUrl: raw['avatarUrl']?.toString(),
+          personaName: raw['personaName']?.toString(),
         );
       }
     } catch (_) {
@@ -107,7 +115,10 @@ class SteamCooldownService {
     }
   }
 
-  static void _persistSuccessfulResult(String login, SteamCooldownResult result) {
+  static void _persistSuccessfulResult(
+    String login,
+    SteamCooldownResult result,
+  ) {
     try {
       final file = File(_cacheFilePath);
       file.parent.createSync(recursive: true);
@@ -127,8 +138,13 @@ class SteamCooldownService {
         'penaltyReason': result.penaltyReason,
         'vacBanned': result.vacBanned,
         'message': result.message,
+        'steamId64': result.steamId64,
+        'avatarUrl': result.avatarUrl,
+        'personaName': result.personaName,
         'checkedAt': now,
-        'expiresAt': result.penaltySeconds > 0 ? now + result.penaltySeconds : 0,
+        'expiresAt': result.penaltySeconds > 0
+            ? now + result.penaltySeconds
+            : 0,
       };
       file.writeAsStringSync(jsonEncode(all));
     } catch (_) {
@@ -161,8 +177,7 @@ class SteamCooldownService {
     if (helper == null) {
       return const SteamCooldownResult(
         status: 'helper_missing',
-        message:
-            'Componente Steam GC nao encontrado. Execute tools/steam_gc_helper/build.ps1 e gere o app novamente.',
+        message: 'Componente Steam GC nao encontrado. Execute tools/steam_gc_helper/build.ps1 e gere o app novamente.',
       );
     }
 
@@ -189,7 +204,9 @@ class SteamCooldownService {
 
       final stdoutFuture = process.stdout.transform(utf8.decoder).join();
       final stderrFuture = process.stderr.transform(utf8.decoder).join();
-      final exitCode = await process.exitCode.timeout(const Duration(seconds: 65));
+      final exitCode = await process.exitCode.timeout(
+        const Duration(seconds: 65),
+      );
       final output = (await stdoutFuture).trim();
       final errorOutput = (await stderrFuture).trim();
 
@@ -208,13 +225,20 @@ class SteamCooldownService {
           .toList();
       final decoded = jsonDecode(lines.last) as Map<String, dynamic>;
       final result = SteamCooldownResult.fromJson(decoded);
-      if (profileReference != null && result.steamId64 != null && result.avatarUrl != null) {
-        SteamProfileService.rememberAuthenticatedProfile(
-          reference: profileReference,
-          steamId64: result.steamId64!,
-          avatarUrl: result.avatarUrl!,
-          displayName: result.personaName,
-        );
+      if (result.steamId64 != null && result.avatarUrl != null) {
+        for (final reference in {
+          SteamProfileService.loginReference(normalizedUser),
+          result.steamId64!,
+          if (profileReference != null && profileReference.trim().isNotEmpty)
+            profileReference,
+        }) {
+          SteamProfileService.rememberAuthenticatedProfile(
+            reference: reference,
+            steamId64: result.steamId64!,
+            avatarUrl: result.avatarUrl!,
+            displayName: result.personaName,
+          );
+        }
       }
 
       if (result.status == 'ok') {
