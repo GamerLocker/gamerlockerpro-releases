@@ -40,6 +40,7 @@ class SteamCooldownResult {
   });
 
   bool get hasCooldown => status == 'ok' && penaltySeconds > 0;
+  bool get shouldShowCompetitiveAccess => status == 'ok' && prime == false;
   bool get needsSteamGuard =>
       status == 'steam_guard_required' || status == 'two_factor_required';
 
@@ -179,6 +180,7 @@ class SteamCooldownService {
     String? profileReference,
     bool detailsOnly = false,
     int inventoryAppId = 730,
+    void Function(SteamCooldownResult)? onProgress,
   }) async {
     final normalizedUser = username.trim();
     _loadDiskCacheOnce();
@@ -215,7 +217,9 @@ class SteamCooldownService {
         'password': password,
         'authCode': authCode?.trim() ?? '',
         'twoFactorCode': twoFactorCode?.trim() ?? '',
-        'timeoutSeconds': 45,
+        'timeoutSeconds': 75,
+        'preferDeviceConfirmation':
+            twoFactorCode == null || twoFactorCode.trim().isEmpty,
         'joinGamerLockerGroup': !detailsOnly,
         'detailsOnly': detailsOnly,
         'inventoryAppId': inventoryAppId,
@@ -224,10 +228,24 @@ class SteamCooldownService {
       process.stdin.writeln(jsonEncode(request));
       await process.stdin.close();
 
-      final stdoutFuture = process.stdout.transform(utf8.decoder).join();
+      final stdoutFuture = process.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .map((line) {
+            try {
+              final progress = SteamCooldownResult.fromJson(
+                jsonDecode(line) as Map<String, dynamic>,
+              );
+              if (progress.status == 'waiting_device_confirmation') {
+                onProgress?.call(progress);
+              }
+            } catch (_) {}
+            return line;
+          })
+          .join('\n');
       final stderrFuture = process.stderr.transform(utf8.decoder).join();
       final exitCode = await process.exitCode.timeout(
-        const Duration(seconds: 65),
+        const Duration(seconds: 100),
       );
       final output = (await stdoutFuture).trim();
       final errorOutput = (await stderrFuture).trim();

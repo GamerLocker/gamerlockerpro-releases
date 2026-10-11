@@ -40,6 +40,7 @@ sealed class GcSubscribedType
 [ProtoContract]
 sealed class GcEconAccount
 {
+    [ProtoMember(13)] public uint? BonusXpFlags { get; set; }
     [ProtoMember(14)] public uint? ElevatedState { get; set; }
 }
 
@@ -52,8 +53,11 @@ static class GcWelcomeStatus
         foreach (var data in type.Data)
         {
             try {
-                var state = Serializer.Deserialize<GcEconAccount>(new MemoryStream(data)).ElevatedState;
-                if (state is 0 or 1) return state == 1;
+                var account = Serializer.Deserialize<GcEconAccount>(new MemoryStream(data));
+                if (account.ElevatedState == 5 || (account.BonusXpFlags.GetValueOrDefault() & 16) != 0) return true;
+                if (account.ElevatedState.GetValueOrDefault() == 0 &&
+                    (account.ElevatedState.HasValue || account.BonusXpFlags.HasValue) &&
+                    (account.BonusXpFlags.GetValueOrDefault() & 16) == 0) return false;
             } catch { }
         }
         return null;

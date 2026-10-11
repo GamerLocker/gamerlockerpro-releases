@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'steam_cooldown_service.dart';
+import 'steam_guard_dialog.dart';
 
 class SteamAccountScreen extends StatefulWidget {
   final String username;
@@ -20,6 +21,7 @@ class _SteamAccountScreenState extends State<SteamAccountScreen> {
   SteamCooldownResult? result;
   bool loading = false;
   String? error;
+  String? progressMessage;
   String search = '';
   int inventoryApp = 730;
   @override
@@ -36,6 +38,7 @@ class _SteamAccountScreenState extends State<SteamAccountScreen> {
     setState(() {
       loading = true;
       error = null;
+      progressMessage = null;
     });
     try {
       var next =
@@ -45,36 +48,20 @@ class _SteamAccountScreenState extends State<SteamAccountScreen> {
                 password: widget.password,
                 detailsOnly: true,
                 inventoryAppId: inventoryApp,
+                onProgress: (progress) {
+                  if (mounted) {
+                    setState(() => progressMessage = progress.message);
+                  }
+                },
               ));
       if (!mounted) return;
       if (next.needsSteamGuard) {
-        final controller = TextEditingController();
-        final code = await showDialog<String>(
-          context: context,
-          builder: (context) => AlertDialog(
-            title: const Text('Steam Guard'),
-            content: TextField(
-              controller: controller,
-              autofocus: true,
-              decoration: InputDecoration(
-                labelText: next.guardType == 'mobile'
-                    ? 'Código do autenticador'
-                    : 'Código recebido por e-mail',
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancelar'),
-              ),
-              FilledButton(
-                onPressed: () => Navigator.pop(context, controller.text.trim()),
-                child: const Text('Confirmar'),
-              ),
-            ],
-          ),
+        final code = await askSteamGuardCode(
+          context,
+          hint: next.guardType == 'mobile'
+              ? 'Código do autenticador'
+              : 'Código recebido por e-mail',
         );
-        controller.dispose();
         if (code != null && code.isNotEmpty) {
           final mobile =
               next.guardType == 'mobile' ||
@@ -106,7 +93,12 @@ class _SteamAccountScreenState extends State<SteamAccountScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => loading = false);
+      if (mounted) {
+        setState(() {
+          loading = false;
+          progressMessage = null;
+        });
+      }
     }
   }
 
@@ -168,6 +160,7 @@ class _SteamAccountScreenState extends State<SteamAccountScreen> {
         body: Column(
           children: [
             if (loading) const LinearProgressIndicator(),
+            if (loading && progressMessage != null) message(progressMessage!),
             if (error != null) message(error!),
             Expanded(
               child: data == null

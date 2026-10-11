@@ -127,9 +127,10 @@ var authStarted = false;
 
 async Task AuthenticateWithCredentials()
 {
+    RequestAuthenticator? authenticator = null;
     try
     {
-        var authenticator = new RequestAuthenticator(request);
+        authenticator = new RequestAuthenticator(request);
         var authSession = await client.Authentication.BeginAuthSessionViaCredentialsAsync(new AuthSessionDetails
         {
             Username = request.Username.Trim(),
@@ -140,7 +141,8 @@ async Task AuthenticateWithCredentials()
             DeviceFriendlyName = $"{Environment.MachineName} (GamerLocker)",
         });
 
-        var poll = await authSession.PollingWaitForResultAsync();
+        using var authTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(Math.Min(45, timeoutSeconds - 5)));
+        var poll = await authSession.PollingWaitForResultAsync(authTimeout.Token);
 
         if (finished) return;
 
@@ -157,6 +159,11 @@ async Task AuthenticateWithCredentials()
             LoginID = helperLoginId,
             MachineName = $"{Environment.MachineName} (GamerLocker)",
         });
+    }
+    catch (OperationCanceledException) when (authenticator?.WaitingForDevice == true)
+    {
+        Finish(new Result("two_factor_required", GuardType: "mobile",
+            Message: "A aprovacao no celular nao chegou a tempo. Informe o codigo do autenticador."));
     }
     catch (GuardCodeRequiredException ex)
     {
@@ -453,7 +460,8 @@ sealed record Request(
     bool SavedSessionOnly = false,
     bool JoinGamerLockerGroup = false,
     bool DetailsOnly = false,
-    uint InventoryAppId = 730);
+    uint InventoryAppId = 730,
+    bool PreferDeviceConfirmation = false);
 
 sealed record Result(
     string Status,
@@ -484,6 +492,7 @@ sealed class GuardCodeRequiredException : Exception
 
 sealed class RequestAuthenticator : IAuthenticator
 {
+    public bool WaitingForDevice { get; private set; }
     private readonly Request request;
 
     public RequestAuthenticator(Request request)
@@ -520,9 +529,14 @@ sealed class RequestAuthenticator : IAuthenticator
 
     public Task<bool> AcceptDeviceConfirmationAsync()
     {
-        // For the one-shot helper we intentionally fall back to a code so the
-        // Flutter UI can request it and invoke the helper again.
-        return Task.FromResult(false);
+        var accept = request.PreferDeviceConfirmation && string.IsNullOrWhiteSpace(request.TwoFactorCode);
+        if (accept) {
+            WaitingForDevice = true;
+            Console.WriteLine(JsonSerializer.Serialize(new Result("waiting_device_confirmation",
+                Message: "Aprove o login no aplicativo Steam Guard do celular."),
+                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+        }
+        return Task.FromResult(accept);
     }
 }
 

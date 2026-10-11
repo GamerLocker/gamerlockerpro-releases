@@ -17,6 +17,7 @@ import 'steam_profile_service.dart';
 import 'steam_cooldown_service.dart';
 import 'steam_account_screen.dart';
 import 'steam_account_avatar.dart';
+import 'steam_guard_dialog.dart';
 import 'update_gate.dart';
 
 Future<void> main() async {
@@ -2720,6 +2721,7 @@ class SteamCooldownSummary extends StatefulWidget {
 
 class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
   bool checking = false;
+  String? progressMessage;
   SteamCooldownResult? result;
 
   String get login => widget.account.fields['Login']?.trim() ?? '';
@@ -2732,48 +2734,25 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
   }
 
   Future<String?> _askGuardCode(String title, String hint) async {
-    final controller = TextEditingController();
-    final value = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          textCapitalization: TextCapitalization.characters,
-          decoration: InputDecoration(labelText: hint),
-          onSubmitted: (value) => Navigator.pop(context, value.trim()),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Continuar'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
-    return value?.trim();
+    return askSteamGuardCode(context, hint: hint);
   }
 
   Future<void> _check() async {
     if (checking) return;
 
-    setState(() => checking = true);
+    setState(() { checking = true; progressMessage = null; });
 
     var next = await SteamCooldownService.check(
       username: login,
       password: password,
       profileReference: widget.account.steamProfileReference,
+      onProgress: (progress) { if (mounted) setState(() => progressMessage = progress.message); },
     );
 
     if (!mounted) return;
 
     if (next.needsSteamGuard) {
+      setState(() => progressMessage = null);
       final mobile = next.guardType == 'mobile' || next.status == 'two_factor_required';
       final code = await _askGuardCode(
         'Steam Guard',
@@ -2795,6 +2774,7 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
     setState(() {
       result = next;
       checking = false;
+      progressMessage = null;
     });
   }
 
@@ -2842,6 +2822,8 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
       label = 'Adicione Login e Senha para verificar o cooldown.';
     }
 
+    if (checking && progressMessage != null) label = progressMessage!;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
       decoration: BoxDecoration(
@@ -2872,7 +2854,8 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
                       style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
                   if (current.cs2Level != null && current.cs2Level! > 0)
                     Text('Nível CS2: ${current.cs2Level}', style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
-                  Text('Competitivo: não confirmado', style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
+                  if (current.shouldShowCompetitiveAccess)
+                    Text('Competitivo: não confirmado', style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
                 ],
                 if (current?.sessionWarning != null)
                   Text(

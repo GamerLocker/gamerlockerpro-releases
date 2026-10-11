@@ -54,6 +54,9 @@ Check(SteamAvatar.UrlFromHash(Enumerable.Repeat((byte)0xab, 20).ToArray()) ==
     "https://avatars.fastly.steamstatic.com/abababababababababababababababababababab_full.jpg",
     "Steam persona avatar hash must resolve to the full-size image");
 Check(await auth.GetDeviceCodeAsync(false) == "12345", "First Guard code must be submitted");
+Check(!await auth.AcceptDeviceConfirmationAsync(), "An explicit code must take precedence over phone approval");
+Check(await new RequestAuthenticator(new Request(PreferDeviceConfirmation: true)).AcceptDeviceConfirmationAsync(),
+    "Mobile approval was refused by the authenticator");
 try { await auth.GetDeviceCodeAsync(true); throw new Exception("Rejected code was resubmitted"); }
 catch (GuardCodeRequiredException ex) { Check(ex.GuardType == "mobile", "Incorrect Guard type"); }
 try { await auth.GetEmailCodeAsync("test@example.invalid", true); throw new Exception("Rejected email code was resubmitted"); }
@@ -114,10 +117,14 @@ var levelStatus = Decode<GcAccountStatus>([0x08, 0x2a, 0x88, 0x01, 0x02]);
 Check(levelStatus.PlayerLevel == 2 && Decode<GcAccountStatus>([0x08, 0x2a]).PlayerLevel is null,
     "Absent CS2 level must not become a fabricated zero");
 var primeWelcome = new CsgoGcClientWelcome { Caches = [new GcSubscribedCache {
-    Owner = new GcCacheOwner { Id = 123 }, Objects = [new GcSubscribedType { TypeId = 7, Data = [[0x70, 0x01]] }]
+    Owner = new GcCacheOwner { Id = 123 }, Objects = [new GcSubscribedType { TypeId = 7, Data = [[0x70, 0x05]] }]
 }] };
 Check(GcWelcomeStatus.ReadPrime(primeWelcome, 123) == true && GcWelcomeStatus.ReadPrime(primeWelcome, 124) is null,
     "Prime metadata belongs to a different account");
+primeWelcome.Caches[0].Objects[0].Data[0] = [0x68, 0x10];
+Check(GcWelcomeStatus.ReadPrime(primeWelcome, 123) == true, "Legacy Prime bit not recognized");
+primeWelcome.Caches[0].Objects[0].Data[0] = [0x68, 0x00];
+Check(GcWelcomeStatus.ReadPrime(primeWelcome, 123) == false, "Non-Prime default elevated state not recognized");
 primeWelcome.Caches[0].Objects[0].Data[0] = [];
 Check(GcWelcomeStatus.ReadPrime(primeWelcome, 123) is null, "Missing Prime field cannot mean non-Prime");
 Console.WriteLine("PASS: nullable CS2 level and account-owned Prime metadata.");
