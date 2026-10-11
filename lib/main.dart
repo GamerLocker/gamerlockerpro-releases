@@ -16,6 +16,7 @@ import 'auth_screens.dart';
 import 'steam_profile_service.dart';
 import 'steam_cooldown_service.dart';
 import 'steam_account_screen.dart';
+import 'steam_account_avatar.dart';
 import 'update_gate.dart';
 
 Future<void> main() async {
@@ -2248,12 +2249,9 @@ class _AccountCardState extends State<AccountCard> {
                                     color: accent.withValues(alpha: 0.20),
                                   ),
                                 ),
-                                child: Icon(
-                                  account.type == 'Steam'
-                                      ? Icons.sports_esports
-                                      : Icons.videogame_asset,
-                                  color: Colors.white,
-                                ),
+                                child: account.type == 'Steam'
+                                    ? SteamAccountAvatar(reference: account.steamProfileReference, login: login)
+                                    : const Icon(Icons.videogame_asset, color: Colors.white),
                               ),
                               const SizedBox(width: 12),
                               Expanded(
@@ -3197,12 +3195,10 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
                         color: const Color(0xFF232735),
                         borderRadius: BorderRadius.circular(18),
                       ),
-                      child: Icon(
-                        account.type == 'Steam'
-                            ? Icons.sports_esports
-                            : Icons.videogame_asset,
-                        size: 32,
-                      ),
+                      child: account.type == 'Steam'
+                          ? SteamAccountAvatar(reference: account.steamProfileReference,
+                              login: account.fields['Login'] ?? '', size: 64, radius: 18)
+                          : const Icon(Icons.videogame_asset, size: 32),
                     ),
                     const SizedBox(width: 18),
                     Expanded(

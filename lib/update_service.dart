@@ -11,7 +11,7 @@ const bool gamerLockerMicrosoftStoreBuild = bool.fromEnvironment(
 
 const String gamerLockerCurrentVersion = String.fromEnvironment(
   'APP_VERSION',
-  defaultValue: '0.1.15',
+  defaultValue: '0.1.16',
 );
 
 class GamerLockerUpdateInfo {
