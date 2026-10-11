@@ -15,6 +15,7 @@ import 'app_backend.dart';
 import 'auth_screens.dart';
 import 'steam_profile_service.dart';
 import 'steam_cooldown_service.dart';
+import 'steam_account_screen.dart';
 import 'update_gate.dart';
 
 Future<void> main() async {
@@ -3156,6 +3157,12 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
       appBar: AppBar(
         title: Text(account.displayName),
         actions: [
+          if (account.type == 'Steam') IconButton(
+            tooltip: 'Dados Steam', icon: const Icon(Icons.sports_esports_outlined),
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => SteamAccountScreen(
+              username: account.fields['Login'] ?? '', password: account.fields['Senha'] ?? '',
+            ))),
+          ),
           IconButton(
             tooltip: gl('Editar'),
             onPressed: edit,

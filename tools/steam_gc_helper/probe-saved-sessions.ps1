@@ -1,4 +1,4 @@
-param([switch]$JoinGamerLockerGroup)
+param([switch]$JoinGamerLockerGroup, [switch]$AccountDetails)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security
 $helper = Join-Path $PSScriptRoot 'publish\GamerLocker.SteamGcHelper.exe'
@@ -13,9 +13,16 @@ foreach ($file in Get-ChildItem -LiteralPath $directory -Filter '*.bin') {
         $session = [Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json
         $index++
         # No credentials or token are supplied to the process or printed.
-        $request = @{username=$session.AccountName; savedSessionOnly=$true; timeoutSeconds=15; joinGamerLockerGroup=[bool]$JoinGamerLockerGroup} | ConvertTo-Json -Compress
+        $request = @{username=$session.AccountName; savedSessionOnly=$true; timeoutSeconds=15; joinGamerLockerGroup=[bool]$JoinGamerLockerGroup; detailsOnly=[bool]$AccountDetails} | ConvertTo-Json -Compress
         Write-Output "Saved session $index"
-        $request | & $helper
+        if ($AccountDetails) {
+            $response = ($request | & $helper) | ConvertFrom-Json
+            [pscustomobject]@{Status=$response.status; GamesStatus=$response.accountDetails.gamesStatus;
+                Games=@($response.accountDetails.games).Count; Level=$response.accountDetails.steamLevel;
+                BadgesStatus=$response.accountDetails.badgesStatus; Badges=@($response.accountDetails.badges).Count;
+                InventoryStatus=$response.accountDetails.inventoryStatus; Items=@($response.accountDetails.inventory).Count;
+                Complete=$response.accountDetails.inventoryComplete}
+        } else { $request | & $helper }
     } finally {
         if ($plain) { [Array]::Clear($plain, 0, $plain.Length) }
         $session = $null

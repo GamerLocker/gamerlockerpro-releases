@@ -95,3 +95,23 @@ finally
     }
 }
 Console.WriteLine("PASS: welcome cooldown/VAC and fallback, ZIP handshake, token fallback, Guard retry, per-account DPAPI persistence, corruption and plaintext exclusion.");
+using (var inventory = System.Text.Json.JsonDocument.Parse("""
+{"assets":[{"assetid":"99","classid":"10","instanceid":"0","amount":"1"},{"assetid":"100","classid":"11","instanceid":"0","amount":"2"}],
+"descriptions":[{"classid":"10","instanceid":"0","market_hash_name":"5 Year Veteran Coin","type":"Collectible","icon_url":"test-icon","tradable":0,"marketable":0},
+{"classid":"11","instanceid":"0","name":"Skin","tradable":1,"marketable":1}]}
+"""))
+{
+    var items = SteamAccountDetails.ParseInventory(inventory.RootElement);
+    Check(items.Count == 2 && items[0].IsMedal && items[0].Id == "99" && !items[0].Tradable,
+        "Inventory descriptions did not match asset identity");
+    Check(items[1].Name == "Skin" && items[1].Amount == "2" && items[1].Marketable,
+        "Inventory quantities or permissions decoded incorrectly");
+}
+Check(SteamAccountDetails.ParseBadgeNames("<div class=\"badge_title\">Test &amp; badge <span>level 2</span></div>").Single().Contains("Test & badge"),
+    "Badge HTML title parsing failed");
+Console.WriteLine("PASS: inventory asset/description matching, medal classification and badge names.");
+using (var flags = System.Text.Json.JsonDocument.Parse("[true,1,false,0]")) {
+    Check(SteamAccountDetails.IsTrue(flags.RootElement[0]) && SteamAccountDetails.IsTrue(flags.RootElement[1]) &&
+          !SteamAccountDetails.IsTrue(flags.RootElement[2]) && !SteamAccountDetails.IsTrue(flags.RootElement[3]),
+          "Steam inventory boolean and numeric flags differ");
+}

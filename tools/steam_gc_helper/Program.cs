@@ -73,6 +73,7 @@ var cmReconnectAttempts = 0;
 // Avoid colliding with the Steam desktop client's automatically generated LoginID.
 var helperLoginId = (uint)System.Security.Cryptography.RandomNumberGenerator.GetInt32(1, int.MaxValue);
 Task<SteamGroupResult>? groupJoinTask = null;
+Task<SteamDetails>? detailsTask = null;
 string? profileSteamId = null;
 string? profileAvatarUrl = null;
 string? profileName = null;
@@ -256,6 +257,12 @@ manager.Subscribe<SteamUser.LoggedOnCallback>(async callback =>
     profileSteamId = client.SteamID!.ConvertToUInt64().ToString();
     friends!.RequestFriendInfo(client.SteamID,
         EClientPersonaStateFlag.PlayerName | EClientPersonaStateFlag.Presence);
+    if (request.DetailsOnly && savedSession is not null)
+    {
+        detailsTask = SteamAccountDetails.FetchAsync(client, savedSession.RefreshToken, request.InventoryAppId);
+        Finish(new Result("ok"));
+        return;
+    }
 
     if (request.JoinGamerLockerGroup && groupJoinTask is null && savedSession is not null)
         groupJoinTask = SteamGroupMembership.EnsureMemberAsync(
@@ -414,6 +421,14 @@ if (profileSteamId is not null && profileAvatarUrl is null)
     while (profileAvatarUrl is null && client.IsConnected && DateTime.UtcNow < profileDeadline)
         manager.RunWaitCallbacks(TimeSpan.FromMilliseconds(100));
 }
+if (detailsTask is not null)
+{
+    var detailsDeadline = DateTime.UtcNow.AddSeconds(25);
+    while (!detailsTask.IsCompleted && client.IsConnected && DateTime.UtcNow < detailsDeadline)
+        manager.RunWaitCallbacks(TimeSpan.FromMilliseconds(100));
+    if (detailsTask.IsCompletedSuccessfully && result is not null)
+        result = result with { AccountDetails = detailsTask.Result };
+}
 if (result is not null) result = result with {
     SteamId64 = profileSteamId, AvatarUrl = profileAvatarUrl, PersonaName = profileName,
 };
@@ -433,7 +448,9 @@ sealed record Request(
     string TwoFactorCode = "",
     int TimeoutSeconds = 45,
     bool SavedSessionOnly = false,
-    bool JoinGamerLockerGroup = false);
+    bool JoinGamerLockerGroup = false,
+    bool DetailsOnly = false,
+    uint InventoryAppId = 730);
 
 sealed record Result(
     string Status,
@@ -447,7 +464,8 @@ sealed record Result(
     string? GroupMessage = null,
     string? SteamId64 = null,
     string? AvatarUrl = null,
-    string? PersonaName = null);
+    string? PersonaName = null,
+    SteamDetails? AccountDetails = null);
 
 sealed class GuardCodeRequiredException : Exception
 {

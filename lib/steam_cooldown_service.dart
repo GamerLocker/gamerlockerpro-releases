@@ -17,6 +17,7 @@ class SteamCooldownResult {
   final String? steamId64;
   final String? avatarUrl;
   final String? personaName;
+  final Map<String, dynamic>? accountDetails;
 
   const SteamCooldownResult({
     required this.status,
@@ -31,6 +32,7 @@ class SteamCooldownResult {
     this.steamId64,
     this.avatarUrl,
     this.personaName,
+    this.accountDetails,
   });
 
   bool get hasCooldown => status == 'ok' && penaltySeconds > 0;
@@ -52,6 +54,9 @@ class SteamCooldownResult {
       steamId64: json['steamId64']?.toString(),
       avatarUrl: json['avatarUrl']?.toString(),
       personaName: json['personaName']?.toString(),
+      accountDetails: json['accountDetails'] is Map
+          ? Map<String, dynamic>.from(json['accountDetails'] as Map)
+          : null,
     );
   }
 }
@@ -60,6 +65,9 @@ class SteamCooldownService {
   SteamCooldownService._();
 
   static final Map<String, SteamCooldownResult> _cache = {};
+  static final Map<String, SteamCooldownResult> _detailsCache = {};
+  static SteamCooldownResult? cachedDetails(String login) =>
+      _detailsCache[login.trim()];
   static bool _diskCacheLoaded = false;
 
   static String get _cacheFilePath {
@@ -159,6 +167,8 @@ class SteamCooldownService {
     String? twoFactorCode,
     bool forceRefresh = true,
     String? profileReference,
+    bool detailsOnly = false,
+    int inventoryAppId = 730,
   }) async {
     final normalizedUser = username.trim();
     _loadDiskCacheOnce();
@@ -169,7 +179,7 @@ class SteamCooldownService {
       );
     }
 
-    if (!forceRefresh && _cache.containsKey(normalizedUser)) {
+    if (!detailsOnly && !forceRefresh && _cache.containsKey(normalizedUser)) {
       return _cache[normalizedUser]!;
     }
 
@@ -196,7 +206,9 @@ class SteamCooldownService {
         'authCode': authCode?.trim() ?? '',
         'twoFactorCode': twoFactorCode?.trim() ?? '',
         'timeoutSeconds': 45,
-        'joinGamerLockerGroup': true,
+        'joinGamerLockerGroup': !detailsOnly,
+        'detailsOnly': detailsOnly,
+        'inventoryAppId': inventoryAppId,
       };
 
       process.stdin.writeln(jsonEncode(request));
@@ -241,7 +253,10 @@ class SteamCooldownService {
         }
       }
 
-      if (result.status == 'ok') {
+      if (detailsOnly && result.accountDetails != null) {
+        _detailsCache[normalizedUser] = result;
+      }
+      if (!detailsOnly && result.status == 'ok') {
         _cache[normalizedUser] = result;
         _persistSuccessfulResult(normalizedUser, result);
       }
