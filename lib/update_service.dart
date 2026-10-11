@@ -11,7 +11,7 @@ const bool gamerLockerMicrosoftStoreBuild = bool.fromEnvironment(
 
 const String gamerLockerCurrentVersion = String.fromEnvironment(
   'APP_VERSION',
-  defaultValue: '0.1.17',
+  defaultValue: '0.1.18',
 );
 
 class GamerLockerUpdateInfo {
@@ -121,7 +121,7 @@ class GamerLockerUpdateService {
 
         final release = Map<String, dynamic>.from(item);
 
-        if (release['draft'] == true) {
+        if (release['draft'] == true || release['prerelease'] == true) {
           continue;
         }
 
@@ -267,7 +267,7 @@ class GamerLockerUpdateService {
         );
       }
 
-      if (privateUpdates) {
+      if (privateUpdates || update.sha256Digest != null) {
         final digest = update.sha256Digest;
         if (digest == null ||
             (await sha256.bind(installer.openRead()).first).toString() !=

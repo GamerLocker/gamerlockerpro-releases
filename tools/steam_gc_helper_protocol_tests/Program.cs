@@ -13,6 +13,21 @@ Check(active.PenaltySeconds == 300 && active.PenaltyReason == 4 && active.VacBan
     "Cooldown/VAC wire format changed");
 var days = Decode<CsgoMatchmakingGcHello>([0x20, 0x80, 0xf5, 0x18]);
 Check(days.PenaltySeconds == 408192, "Multi-day cooldown decoded incorrectly");
+var oversized = Decode<CsgoMatchmakingGcHello>([0x20, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x28, 0xff, 0xff, 0xff, 0xff, 0x0f]);
+var oversizedResult = new Result("ok", PenaltySeconds: oversized.PenaltySeconds, PenaltyReason: oversized.PenaltyReason);
+Check(oversizedResult.PenaltySeconds == uint.MaxValue && oversizedResult.PenaltyReason == uint.MaxValue,
+    "Unsigned GC penalties must not overflow or become zero");
+Check(GcPenalty.RemainingSeconds(4294947254, 22) == 0, "Expired timed cooldown wrapped below zero must be clear");
+Check(GcPenalty.RemainingSeconds(4294947254, 1) == 4294947254, "Other ban types must not be silently cleared");
+Check(GcPenalty.RemainingSeconds(500000, 22) == 500000, "Valid timed cooldown must remain active");
+Check(GcWelcomeStatus.ReadPremier([new() { AccountId = 42, RankTypeId = 11, RankId = 15000 }], null, 42) == 15000,
+    "Premier rating must use the authenticated account's Premier rank type");
+Check(GcWelcomeStatus.ReadPremier([new() { AccountId = 43, RankTypeId = 11, RankId = 15000 }], null, 42) is null,
+    "Foreign Premier ranking must not populate the account");
+Check(SteamContactDetails.ParsePhone("<div class=\"account_data_field\">+55 ** *****-1234</div>") == "+55 ** *****-1234",
+    "Phone hints must preserve the Steam mask");
+Check(SteamContactDetails.ParsePhone("<div class=\"account_data_field\">1234</div><script>phone_number='+1234'</script>") is null,
+    "Arbitrary account numbers and scripts are not phone numbers");
 // The live GC response stores account status in welcome field 6 (game_data2).
 var welcome = Decode<CsgoGcClientWelcome>([0x32, 0x08, 0x08, 0x2a, 0x20, 0xde, 0xfd, 0x16, 0x28, 0x16]);
 Check(GcWelcomeStatus.TryRead(welcome.GameData2, 42, out var status) &&

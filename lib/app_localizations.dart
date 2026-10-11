@@ -205,6 +205,53 @@ final Map<String, String> _english = <String, String>{
   'E-mail verificado': 'Email verified',
   'Telefone verificado': 'Phone verified',
   'Não informado': 'Not provided',
+  'Sem penalidade': 'No penalty',
+  'Todas': 'All',
+  'Cards': 'Cards',
+  'Lista': 'List',
+  'Verificar contas visíveis': 'Verify visible accounts',
+  'Parar após consulta atual': 'Stop after current check',
+  'Parando após consulta atual': 'Stopping after current check',
+  'Consultas concluídas': 'Checks completed',
+  'Falhas': 'Failures',
+  'Horas CS2': 'CS2 hours',
+  'Penalidade': 'Penalty',
+  'Não se aplica': 'Not applicable',
+  'Plano indisponivel': 'Plan unavailable',
+  'Consultando plano': 'Checking plan',
+  'Não foi possível consultar o plano.': 'Could not check your plan.',
+  'Tentar novamente': 'Try again',
+  'Com penalidade': 'With penalty',
+  'Não verificadas': 'Not verified',
+  'Ordem manual': 'Manual order',
+  'Cooldown termina primeiro': 'Cooldown ending soonest',
+  'Últimas verificadas': 'Recently verified',
+  'Favoritas primeiro': 'Favorites first',
+  'Mais horas de CS2': 'Most CS2 hours',
+  'Ordenar por': 'Sort by',
+  'Última consulta': 'Last checked',
+  'Término previsto': 'Estimated end',
+  'Prazo encerrado; verifique novamente': 'Time elapsed; verify again',
+  'Nenhuma conta corresponde aos filtros e à pesquisa.':
+      'No accounts match the filters and search.',
+  'Horas consultadas em Dados Steam; contas sem informação ficam no final.': 'Hours are checked in Steam data; accounts without this information appear last.',
+  'Sem classificação': 'Unranked',
+  'Não disponível pela Steam': 'Not available from Steam',
+  'Verificado; número não informado pela Steam':
+      'Verified; number not provided by Steam',
+  'Classificação não informada pelo GC': 'Rating not provided by the GC',
+  'Abrir detalhes': 'Open details',
+  'Segurança: não verificada': 'Security: not checked',
+  'Segurança validada pela Steam': 'Security verified by Steam',
+  'Autenticador móvel': 'Mobile authenticator',
+  'Confirmado': 'Confirmed',
+  'Não ativo / não verificado': 'Not enabled / not verified',
+  'Clique em Verificar para consultar as proteções da conta.':
+      'Click Verify to check the account protections.',
+  'A consulta não confirma códigos de recuperação salvos nem a segurança do seu e-mail.': 'The check cannot confirm saved recovery codes or the security of your email account.',
+  'As proteções são consultadas na Steam ao verificar a conta. Os dados abaixo são anotações opcionais e não comprovam a segurança.': 'Account protections are checked with Steam when you verify the account. The fields below are optional notes and do not verify security.',
+  'Penalidade ativa: prazo não determinado':
+      'Active penalty: duration undetermined',
   'Senha do e-mail': 'Email password',
   'Nome no perfil': 'Profile name',
   'Sim': 'Yes',
@@ -311,8 +358,7 @@ final Map<String, String> _english = <String, String>{
   'PRO vitalício — sem vencimento': 'Lifetime PRO — no expiration',
   'Seu período PRO terminou.': 'Your PRO period has ended.',
   'Válido até': 'Valid until',
-  'Ative uma chave por vez. Os períodos são somados à validade atual.':
-      'Activate one key at a time. Periods are added to your current expiration date.',
+  'Ative uma chave por vez. Os períodos são somados à validade atual.': 'Activate one key at a time. Periods are added to your current expiration date.',
   'Limite FREE atingido.': 'FREE limit reached.',
   'Contas ilimitadas': 'Unlimited accounts',
   'GamerLocker PRO': 'GamerLocker PRO',
@@ -463,6 +509,17 @@ String gl(String text) {
   match = RegExp(r'^Segurança (\d+)%$').firstMatch(text);
   if (match != null) {
     return 'Security ${match.group(1)}%';
+  }
+
+  match = RegExp(r'^Proteções: (\d+)/4( • consulta parcial)?$')
+      .firstMatch(text);
+  if (match != null) {
+    return 'Protections: ${match.group(1)}/4${match.group(2) == null ? '' : ' • partial check'}';
+  }
+  match = RegExp(r'^Última consulta: (.+)\. O resultado pode mudar na Steam\.$')
+      .firstMatch(text);
+  if (match != null) {
+    return 'Last checked: ${match.group(1)}. The result may change on Steam.';
   }
 
   match = RegExp(r'^(.+) copiado\. Clipboard será limpo em 30 segundos\.$')

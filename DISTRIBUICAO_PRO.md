@@ -1,8 +1,9 @@
 # Distribuicao Pro
 
-O canal Pro consulta a funcao Supabase `private-updates`, que le os releases
-privados de `GamerLocker/gamerlockerpro-releases`. O canal padrao continua consultando
-`GamerLocker/gamerlocker-releases`.
+O canal PRO consulta os releases publicos de
+`GamerLocker/gamerlockerpro-releases`. O canal padrao continua consultando
+`GamerLocker/gamerlocker-releases`. A licenca PRO continua sendo validada pelo
+Supabase; disponibilizar o instalador nao ativa o PRO sem licenca.
 
 Para gerar o instalador Pro no Windows com Flutter, Visual Studio, .NET SDK e
 Inno Setup instalados:
@@ -19,12 +20,31 @@ O instalador fica em `dist/pro/GamerLocker-Setup-v<versao>-windows-x64.exe`.
 Para publicar uma atualizacao, aumente a versao em `pubspec.yaml`, gere o
 instalador e anexe o EXE a um release com tag `v<versao>` no repositorio Pro.
 O atualizador identifica arquivos com prefixo `GamerLocker-Setup-`.
+Publique como release estavel: rascunhos e pre-releases nao sao oferecidos pelo
+atualizador. Quando o GitHub informa o digest, o app confere o SHA-256 antes
+de executar o instalador. Mantenha o repositorio publico para as consultas e
+downloads funcionarem sem credenciais GitHub no cliente.
+
+O aviso aparece ao abrir a versao instalada, quando existe uma versao maior.
+Execucoes pelo Flutter ou pela pasta `build/windows` nao verificam atualizacoes
+automaticamente. Versoes antigas compiladas com `PRIVATE_UPDATES=true` continuam
+dependendo do servidor privado: se ele nao estiver ativo, instale esta versao
+pelo link uma vez para migrar ao canal publico.
 
 Esta separacao define a origem das atualizacoes. O instalador mantem a identidade
 e a pasta de instalacao do GamerLocker: instalar o canal Pro substitui a edicao
 existente e preserva o cofre. Nao instala uma segunda copia lado a lado.
 
-## Ativacao do servidor
+## Canal privado opcional
+
+O servidor abaixo e necessario apenas para um canal privado. Ele nao e usado
+pelo instalador PRO publico. Para compilar com esse servidor explicitamente:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_gamerlocker_installer.ps1 -Channel pro -PrivateUpdates
+```
+
+### Ativacao do servidor
 
 1. Torne o repositorio GitHub privado antes de enviar codigo ou instaladores.
 2. Execute `supabase/migrations/202610110001_private_updates.sql` no SQL Editor

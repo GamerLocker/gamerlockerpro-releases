@@ -18,6 +18,9 @@ import 'steam_cooldown_service.dart';
 import 'steam_account_screen.dart';
 import 'steam_account_avatar.dart';
 import 'steam_guard_dialog.dart';
+import 'account_filters.dart';
+import 'account_dashboard_extras.dart';
+import 'account_service.dart';
 import 'update_gate.dart';
 
 Future<void> main() async {
@@ -107,6 +110,74 @@ class AccountEntry {
   bool favorite;
   Set<String> dashboardFields;
   Map<String, bool> security;
+  Map<String, dynamic>? verifiedSecurity;
+  int? steamCs2Minutes;
+
+  bool applySteamSnapshot(SteamCooldownResult result) {
+    if (type != 'Steam') return false;
+    var changed = false;
+    final details = result.accountDetails;
+    if (details?['gamesStatus'] == 'ok' && details?['games'] is List) {
+      for (final game in details!['games'] as List) {
+        if (game is Map && game['appId'] == 730 && game['minutes'] is num) {
+          final minutes = (game['minutes'] as num).toInt();
+          if (minutes >= 0 && steamCs2Minutes != minutes) {
+            steamCs2Minutes = minutes;
+            changed = true;
+          }
+        }
+      }
+    }
+    void fill(String field, String? value) {
+      if (value == null || value.trim().isEmpty || fields[field] == value) {
+        return;
+      }
+      fields[field] = value;
+      changed = true;
+    }
+
+    if (result.security != null && verifiedSecurity != result.security) {
+      verifiedSecurity = result.security;
+      changed = true;
+    }
+    fill('E-mail vinculado', result.linkedEmail);
+    // Do not replace a complete user-saved phone with a masked hint.
+    if ((fields['Telefone vinculado'] ?? '').isEmpty ||
+        !(result.linkedPhone?.contains(RegExp(r'[*•●]')) ?? false)) {
+      fill('Telefone vinculado', result.linkedPhone);
+    }
+    if (result.steamId64 != null) {
+      fill(
+        'Perfil Steam',
+        'https://steamcommunity.com/profiles/${result.steamId64}',
+      );
+    }
+    fill('Nome no perfil', result.personaName);
+    if (result.prime != null) fill('Prime', result.prime! ? 'Sim' : 'Não');
+    if (result.premierRating != null) {
+      fill(
+        'Premier Rating',
+        result.premierRating! > 0
+            ? result.premierRating.toString()
+            : 'Sem classificação',
+      );
+    }
+    return changed;
+  }
+
+  String fieldDisplayValue(String key) {
+    final value = fields[key] ?? '';
+    if (value.trim().isNotEmpty) return value;
+    if (type == 'Steam') {
+      if (key == 'Senha do e-mail') return 'Não disponível pela Steam';
+      if (key == 'Telefone vinculado' &&
+          verifiedSecurity?['phoneVerified'] == true) {
+        return 'Verificado; número não informado pela Steam';
+      }
+      if (key == 'Premier Rating') return 'Classificação não informada pelo GC';
+    }
+    return 'Não informado';
+  }
 
   AccountEntry({
     required this.name,
@@ -115,16 +186,22 @@ class AccountEntry {
     this.favorite = false,
     Set<String>? dashboardFields,
     Map<String, bool>? security,
+    this.verifiedSecurity,
+    this.steamCs2Minutes,
   }) : dashboardFields = dashboardFields ?? {...defaultDashboardFields},
        security = security ?? <String, bool>{};
 
   String get steamProfile {
     final login = fields['Login']?.trim() ?? '';
     if (type == 'Steam' && login.isNotEmpty) {
-      final authenticated = SteamProfileService.cachedProfile(
-        SteamProfileService.loginReference(login),
-      )?.steamId64 ?? SteamCooldownService.cached(login)?.steamId64;
-      if (authenticated != null && authenticated.isNotEmpty) return authenticated;
+      final authenticated =
+          SteamProfileService.cachedProfile(
+            SteamProfileService.loginReference(login),
+          )?.steamId64 ??
+          SteamCooldownService.cached(login)?.steamId64;
+      if (authenticated != null && authenticated.isNotEmpty) {
+        return authenticated;
+      }
     }
     final profile = fields['Perfil Steam']?.trim() ?? '';
 
@@ -163,6 +240,25 @@ class AccountEntry {
   }
 
   int get securityScore {
+    if (type == 'Steam') {
+      final snapshot = verifiedSecurity;
+      if (snapshot == null ||
+          [
+            'steamGuard',
+            'twoFactor',
+            'emailVerified',
+            'phoneVerified',
+          ].any((key) => snapshot[key] is! bool)) {
+        return -1;
+      }
+      return ([
+            'steamGuard',
+            'twoFactor',
+            'emailVerified',
+            'phoneVerified',
+          ].where((key) => snapshot[key] == true).length *
+          25);
+    }
     final checks = <bool>[
       (fields['E-mail vinculado'] ?? '').trim().isNotEmpty,
       (fields['Telefone vinculado'] ?? '').trim().isNotEmpty,
@@ -185,6 +281,8 @@ class AccountEntry {
       'favorite': favorite,
       'dashboardFields': dashboardFields.toList(),
       'security': security,
+      'verifiedSecurity': verifiedSecurity,
+      'steamCs2Minutes': steamCs2Minutes,
     };
   }
 
@@ -217,6 +315,10 @@ class AccountEntry {
       favorite: json['favorite'] == true,
       dashboardFields: dashboardFields,
       security: security,
+      verifiedSecurity: json['verifiedSecurity'] is Map
+          ? Map<String, dynamic>.from(json['verifiedSecurity'] as Map)
+          : null,
+      steamCs2Minutes: (json['steamCs2Minutes'] as num?)?.toInt(),
     );
   }
 }
@@ -1133,16 +1235,143 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   bool saving = false;
   String searchQuery = '';
-  final Set<int> expandedAccountIndexes = <int>{};
+  AccountFilter accountFilter = AccountFilter.all;
+  AccountSort accountSort = AccountSort.manual;
+  final Map<String, SteamCooldownResult> latestChecks = {};
+  Timer? overviewTimer;
+  bool batchChecking = false;
+  bool stopBatch = false;
+  int batchDone = 0, batchTotal = 0;
+  String batchName = '';
+
+  Future<void> verifyVisibleAccounts() async {
+    if (batchChecking) return;
+    final accounts = visibleAccounts
+        .map((item) => item.account)
+        .where(
+          (account) =>
+              account.type == 'Steam' &&
+              (account.fields['Login'] ?? '').trim().isNotEmpty &&
+              (account.fields['Senha'] ?? '').isNotEmpty,
+        )
+        .toList();
+    if (accounts.isEmpty) return;
+    setState(() {
+      batchChecking = true;
+      stopBatch = false;
+      batchDone = 0;
+      batchTotal = accounts.length;
+    });
+    try {
+      final summary = await verifyAccountBatch(
+        accounts,
+        stopped: () => !mounted || stopBatch,
+        progress: (done, total, name) {
+          if (mounted) {
+            setState(() {
+              batchDone = done;
+              batchTotal = total;
+              batchName = name;
+            });
+          }
+        },
+        guard: (account, mobile) => askSteamGuardCode(
+          context,
+          hint:
+              '${account.displayName}: ${gl(mobile ? 'Codigo do autenticador' : 'Codigo recebido por e-mail')}',
+        ),
+        check: (account, code, mobile) => SteamCooldownService.check(
+          username: account.fields['Login']!,
+          password: account.fields['Senha']!,
+          profileReference: account.steamProfileReference,
+          authCode: mobile ? null : code,
+          twoFactorCode: mobile ? code : null,
+        ),
+        finished: (account, result) {
+          latestChecks[account.fields['Login']!.trim().toLowerCase()] = result;
+          SteamCooldownService.notifyResult(account.fields['Login']!, result);
+        },
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${gl('Consultas concluídas')}: ${summary.done}/$batchTotal • ${gl('Falhas')}: ${summary.failed}',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          batchChecking = false;
+          batchName = '';
+        });
+      }
+    }
+  }
+
+  AccountViewFacts facts(AccountEntry account) => AccountViewFacts(
+    name: account.displayName,
+    favorite: account.favorite,
+    csMinutes: account.steamCs2Minutes,
+    result:
+        latestChecks[(account.fields['Login'] ?? '').trim().toLowerCase()] ??
+        SteamCooldownService.cached(account.fields['Login'] ?? ''),
+  );
+  bool get customizedView =>
+      searchQuery.trim().isNotEmpty ||
+      accountFilter != AccountFilter.all ||
+      accountSort != AccountSort.manual;
+  StreamSubscription<MapEntry<String, SteamCooldownResult>>?
+  securitySubscription;
 
   @override
   void initState() {
     super.initState();
     data = widget.data;
+    overviewTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() {});
+    });
+    var backfilled = false;
+    for (final account in data.accounts.where(
+      (account) => account.type == 'Steam',
+    )) {
+      final cached = SteamCooldownService.cached(account.fields['Login'] ?? '');
+      if (cached != null) {
+        backfilled = account.applySteamSnapshot(cached) || backfilled;
+      }
+    }
+    if (backfilled) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(persist());
+      });
+    }
+    securitySubscription = SteamCooldownService.changes.listen((event) {
+      if (!mounted) return;
+      if (!event.value.detailsOnly) {
+        latestChecks[event.key.trim().toLowerCase()] = event.value;
+        setState(() {});
+      }
+      var updated = false;
+      for (final account in data.accounts) {
+        if (account.type == 'Steam' &&
+            (account.fields['Login'] ?? '').trim().toLowerCase() ==
+                event.key.toLowerCase()) {
+          updated = account.applySteamSnapshot(event.value) || updated;
+        }
+      }
+      if (updated) {
+        setState(() {});
+        unawaited(persist());
+      }
+    });
   }
 
   @override
   void dispose() {
+    securitySubscription?.cancel();
+    overviewTimer?.cancel();
     searchController.dispose();
     super.dispose();
   }
@@ -1336,7 +1565,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  List<_IndexedAccount> get visibleAccounts {
+  List<_IndexedAccount> get searchedAccounts {
     final normalizedQuery = searchQuery.trim().toLowerCase();
 
     final items = data.accounts
@@ -1363,6 +1592,135 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .toList();
 
     return items;
+  }
+
+  List<_IndexedAccount> get visibleAccounts {
+    final now = DateTime.now();
+    final items = searchedAccounts
+        .where(
+          (item) =>
+              matchesAccountFilter(facts(item.account), accountFilter, now),
+        )
+        .toList();
+    items.sort((a, b) {
+      final comparison = compareAccountFacts(
+        facts(a.account),
+        facts(b.account),
+        accountSort,
+        now,
+      );
+      return comparison == 0 ? a.index.compareTo(b.index) : comparison;
+    });
+    return items;
+  }
+
+  Widget buildAccountControls() {
+    final items = searchedAccounts;
+    final now = DateTime.now();
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        ...AccountFilter.values.map((filter) {
+          final count = items
+              .where(
+                (item) =>
+                    matchesAccountFilter(facts(item.account), filter, now),
+              )
+              .length;
+          return ChoiceChip(
+            label: Text('${gl(filter.label)} ($count)'),
+            selected: accountFilter == filter,
+            onSelected: (_) => setState(() => accountFilter = filter),
+          );
+        }),
+        ToggleButtons(
+          isSelected: [
+            data.dashboardView != 'compact',
+            data.dashboardView == 'compact',
+          ],
+          onPressed: (index) {
+            setState(
+              () => data.dashboardView = index == 0 ? 'cards' : 'compact',
+            );
+            unawaited(persist());
+          },
+          borderRadius: BorderRadius.circular(10),
+          constraints: const BoxConstraints(minWidth: 40, minHeight: 36),
+          children: [
+            Tooltip(
+              message: gl('Cards'),
+              child: const Icon(Icons.grid_view, size: 18),
+            ),
+            Tooltip(
+              message: gl('Lista'),
+              child: const Icon(Icons.view_list, size: 18),
+            ),
+          ],
+        ),
+        FilledButton.tonalIcon(
+          onPressed: batchChecking || visibleAccounts.isEmpty
+              ? null
+              : verifyVisibleAccounts,
+          icon: const Icon(Icons.fact_check_outlined, size: 18),
+          label: const Text('Verificar contas visíveis'),
+        ),
+        if (batchChecking) ...[
+          SizedBox(
+            width: 120,
+            child: LinearProgressIndicator(
+              value: batchTotal > 0 ? batchDone / batchTotal : 0,
+            ),
+          ),
+          Text('$batchDone/$batchTotal • $batchName'),
+          TextButton(
+            onPressed: stopBatch
+                ? null
+                : () => setState(() => stopBatch = true),
+            child: Text(
+              stopBatch
+                  ? 'Parando após consulta atual'
+                  : 'Parar após consulta atual',
+            ),
+          ),
+        ],
+        SizedBox(
+          width: 250,
+          child: DropdownButtonFormField<AccountSort>(
+            initialValue: accountSort,
+            isExpanded: true,
+            decoration: InputDecoration(
+              labelText: gl('Ordenar por'),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 8,
+              ),
+            ),
+            items: AccountSort.values
+                .map(
+                  (sort) => DropdownMenuItem(
+                    value: sort,
+                    child: Text(
+                      sort.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                )
+                .toList(),
+            onChanged: (value) {
+              if (value != null) setState(() => accountSort = value);
+            },
+          ),
+        ),
+        if (accountSort == AccountSort.csHours)
+          const Text(
+            'Horas consultadas em Dados Steam; contas sem informação ficam no final.',
+            style: TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+      ],
+    );
   }
 
   Future<void> moveAccount(int fromIndex, int toIndex) async {
@@ -1392,29 +1750,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final available = constraints.maxWidth;
-        final columns = available >= 1160
+        final columns = available >= 1800
+            ? 5
+            : available >= 1420
+            ? 4
+            : available >= 1040
             ? 3
-            : available >= 760
+            : available >= 680
             ? 2
             : 1;
+        final cardWidth = (available - ((columns - 1) * 18)) / columns;
 
-        final expandedWidth = columns == 1
-            ? available
-            : (available - ((columns - 1) * 18)) / columns;
-        final compactWidth = available < 760
-            ? available
-            : (available >= 1160 ? 330.0 : 320.0);
-
-        final dragEnabled =
-            searchQuery.trim().isEmpty && data.accounts.length > 1;
+        final dragEnabled = !customizedView && data.accounts.length > 1;
 
         return Wrap(
           spacing: 18,
           runSpacing: 18,
           children: items.map((item) {
-            final isExpanded = expandedAccountIndexes.contains(item.index);
-
             return DragTarget<int>(
+              key: ObjectKey(item.account),
               onWillAcceptWithDetails: (details) {
                 return dragEnabled && details.data != item.index;
               },
@@ -1430,19 +1784,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 220),
                     curve: Curves.easeOutCubic,
-                    width: isExpanded ? expandedWidth : compactWidth,
+                    width: cardWidth,
                     child: AccountCard(
+                      verificationBusy: batchChecking,
                       account: item.account,
-                      isExpanded: isExpanded,
-                      onToggleExpanded: () {
-                        setState(() {
-                          if (isExpanded) {
-                            expandedAccountIndexes.remove(item.index);
-                          } else {
-                            expandedAccountIndexes.add(item.index);
-                          }
-                        });
-                      },
                       dragIndex: dragEnabled ? item.index : null,
                       onTap: () => openAccount(item.index),
                       onEdit: () => editAccount(item.index),
@@ -1475,7 +1820,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
         ),
         const SizedBox(height: 12),
-        buildAccountGrid(items),
+        data.dashboardView == 'compact'
+            ? AccountListOverview(
+                accounts: items.map((item) => item.account).toList(),
+                verifying: batchChecking,
+                resultFor: (account) => facts(account).result,
+                onOpen: (account) =>
+                    openAccount(data.accounts.indexOf(account)),
+              )
+            : buildAccountGrid(items),
         const SizedBox(height: 28),
       ],
     );
@@ -1592,10 +1945,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .where((account) => account.favorite)
         .length;
     final protectedCount = data.accounts
-        .where((account) => account.securityScore >= 70)
+        .where(
+          (account) => account.type == 'Steam'
+              ? account.securityScore == 100
+              : account.securityScore >= 70,
+        )
         .length;
     final attentionCount = data.accounts
-        .where((account) => account.securityScore < 70)
+        .where(
+          (account) => account.type == 'Steam'
+              ? [
+                  'steamGuard',
+                  'twoFactor',
+                  'emailVerified',
+                  'phoneVerified',
+                ].any((key) => account.verifiedSecurity?[key] == false)
+              : account.securityScore >= 0 && account.securityScore < 70,
+        )
         .length;
 
     return Scaffold(
@@ -1718,7 +2084,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ),
                 ],
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 12),
+              buildAccountControls(),
+              const SizedBox(height: 16),
               Expanded(
                 child: data.accounts.isEmpty
                     ? Center(
@@ -1756,12 +2124,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     : filtered.isEmpty
                     ? Center(
                         child: Text(
-                          'Nenhuma conta encontrada para "$searchQuery".',
+                          'Nenhuma conta corresponde aos filtros e à pesquisa.',
                           style: TextStyle(color: Colors.grey.shade400),
                         ),
                       )
                     : SingleChildScrollView(
-                        child: searchQuery.trim().isNotEmpty
+                        child: customizedView
                             ? buildSection(
                                 'Resultados (${filtered.length})',
                                 filtered,
@@ -2039,17 +2407,17 @@ class _IndexedAccount {
 }
 
 class AccountCard extends StatefulWidget {
+  final bool verificationBusy;
   final AccountEntry account;
   final VoidCallback onTap;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback onToggleFavorite;
   final VoidCallback? onOpenSteamProfile;
-  final bool isExpanded;
-  final VoidCallback onToggleExpanded;
   final int? dragIndex;
 
   const AccountCard({
+    this.verificationBusy = false,
     super.key,
     required this.account,
     required this.onTap,
@@ -2057,8 +2425,6 @@ class AccountCard extends StatefulWidget {
     required this.onDelete,
     required this.onToggleFavorite,
     required this.onOpenSteamProfile,
-    required this.isExpanded,
-    required this.onToggleExpanded,
     this.dragIndex,
   });
 
@@ -2128,28 +2494,6 @@ class _AccountCardState extends State<AccountCard> {
   @override
   Widget build(BuildContext context) {
     final level = levelEntry;
-    final collapsed = !widget.isExpanded;
-
-    final dashboardFields = account.fields.entries.where((field) {
-      if (!account.dashboardFields.contains(field.key)) {
-        return false;
-      }
-
-      if (field.value.trim().isEmpty) {
-        return false;
-      }
-
-      if (field.key.toLowerCase().contains('senha')) {
-        return false;
-      }
-
-      if (level != null && field.key == level.key) {
-        return false;
-      }
-
-      return true;
-    }).toList();
-
     final login = account.fields['Login']?.trim() ?? '';
     final password = account.fields['Senha']?.trim() ?? '';
 
@@ -2227,15 +2571,15 @@ class _AccountCardState extends State<AccountCard> {
                       ),
                     ),
                     Padding(
-                      padding: const EdgeInsets.all(18),
+                      padding: const EdgeInsets.all(14),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Row(
                             children: [
                               Container(
-                                width: 46,
-                                height: 46,
+                                width: 40,
+                                height: 40,
                                 decoration: BoxDecoration(
                                   gradient: LinearGradient(
                                     begin: Alignment.topLeft,
@@ -2251,8 +2595,16 @@ class _AccountCardState extends State<AccountCard> {
                                   ),
                                 ),
                                 child: account.type == 'Steam'
-                                    ? SteamAccountAvatar(reference: account.steamProfileReference, login: login)
-                                    : const Icon(Icons.videogame_asset, color: Colors.white),
+                                    ? SteamAccountAvatar(
+                                        reference:
+                                            account.steamProfileReference,
+                                        login: login,
+                                        size: 40,
+                                      )
+                                    : const Icon(
+                                        Icons.videogame_asset,
+                                        color: Colors.white,
+                                      ),
                               ),
                               const SizedBox(width: 12),
                               Expanded(
@@ -2266,7 +2618,7 @@ class _AccountCardState extends State<AccountCard> {
                                             account.displayName,
                                             overflow: TextOverflow.ellipsis,
                                             style: const TextStyle(
-                                              fontSize: 18,
+                                              fontSize: 16,
                                               fontWeight: FontWeight.w800,
                                             ),
                                           ),
@@ -2328,7 +2680,7 @@ class _AccountCardState extends State<AccountCard> {
                                       : Colors.grey.shade500,
                                 ),
                               ),
-                              if (widget.dragIndex != null && widget.isExpanded)
+                              if (widget.dragIndex != null)
                                 Tooltip(
                                   message: 'Arrastar para reorganizar',
                                   child: Draggable<int>(
@@ -2336,8 +2688,8 @@ class _AccountCardState extends State<AccountCard> {
                                     feedback: Material(
                                       color: Colors.transparent,
                                       child: Container(
-                                        width: 46,
-                                        height: 46,
+                                        width: 40,
+                                        height: 40,
                                         alignment: Alignment.center,
                                         decoration: BoxDecoration(
                                           color: const Color(0xFF292D38),
@@ -2380,19 +2732,6 @@ class _AccountCardState extends State<AccountCard> {
                                     ),
                                   ),
                                 ),
-                              IconButton(
-                                tooltip: gl(
-                                  collapsed
-                                      ? 'Expandir conta'
-                                      : 'Minimizar conta',
-                                ),
-                                onPressed: widget.onToggleExpanded,
-                                icon: Icon(
-                                  collapsed
-                                      ? Icons.keyboard_arrow_down_rounded
-                                      : Icons.keyboard_arrow_up_rounded,
-                                ),
-                              ),
                               PopupMenuButton<String>(
                                 onSelected: (value) {
                                   switch (value) {
@@ -2436,8 +2775,16 @@ class _AccountCardState extends State<AccountCard> {
                               ),
                             ],
                           ),
-                          if (collapsed) ...[
-                            const SizedBox(height: 14),
+                          ...[
+                            const SizedBox(height: 10),
+                            if (account.type == 'Steam') ...[
+                              SteamCooldownSummary(
+                                account: account,
+                                compact: true,
+                                verificationBusy: widget.verificationBusy,
+                              ),
+                              const SizedBox(height: 10),
+                            ],
                             if (login.isNotEmpty)
                               Row(
                                 children: [
@@ -2461,50 +2808,57 @@ class _AccountCardState extends State<AccountCard> {
                                   ),
                                 ],
                               ),
-                            const SizedBox(height: 12),
-                            Row(
-                              children: [
-                                Icon(
-                                  Icons.shield_outlined,
-                                  size: 15,
-                                  color: securityColor,
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'Segurança ${account.securityScore}%',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    color: Colors.grey.shade400,
-                                  ),
-                                ),
-                                const Spacer(),
-                                Text(
-                                  account.securityScore >= 70
-                                      ? 'Boa'
-                                      : account.securityScore >= 40
-                                      ? 'Atenção'
-                                      : 'Baixa',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w700,
+                            const SizedBox(height: 8),
+                            if (account.type == 'Steam')
+                              SteamSecuritySummary(
+                                account: account,
+                                compact: true,
+                              )
+                            else ...[
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.shield_outlined,
+                                    size: 15,
                                     color: securityColor,
                                   ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 6),
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(20),
-                              child: LinearProgressIndicator(
-                                value: account.securityScore / 100,
-                                minHeight: 5,
-                                backgroundColor: const Color(0xFF252936),
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  securityColor,
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Segurança ${account.securityScore}%',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey.shade400,
+                                    ),
+                                  ),
+                                  const Spacer(),
+                                  Text(
+                                    account.securityScore >= 70
+                                        ? 'Boa'
+                                        : account.securityScore >= 40
+                                        ? 'Atenção'
+                                        : 'Baixa',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                      color: securityColor,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(20),
+                                child: LinearProgressIndicator(
+                                  value: account.securityScore / 100,
+                                  minHeight: 5,
+                                  backgroundColor: const Color(0xFF252936),
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    securityColor,
+                                  ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(height: 12),
+                            ],
+                            const SizedBox(height: 8),
                             Row(
                               children: [
                                 if (login.isNotEmpty)
@@ -2513,14 +2867,15 @@ class _AccountCardState extends State<AccountCard> {
                                       onPressed: () async {
                                         await copySecurely(login);
                                         if (!context.mounted) return;
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          const SnackBar(
-                                            duration: Duration(seconds: 2),
-                                            content: Text(
-                                              'Login copiado. Clipboard sera limpo em 30 segundos.',
-                                            ),
-                                          ),
-                                        );
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                              const SnackBar(
+                                                duration: Duration(seconds: 2),
+                                                content: Text(
+                                                  'Login copiado. Clipboard sera limpo em 30 segundos.',
+                                                ),
+                                              ),
+                                            );
                                       },
                                       icon: const Icon(Icons.copy, size: 15),
                                       label: const Text('Login'),
@@ -2534,164 +2889,29 @@ class _AccountCardState extends State<AccountCard> {
                                       onPressed: () async {
                                         await copySecurely(password);
                                         if (!context.mounted) return;
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          const SnackBar(
-                                            duration: Duration(seconds: 2),
-                                            content: Text(
-                                              'Senha copiada. Clipboard sera limpo em 30 segundos.',
-                                            ),
-                                          ),
-                                        );
+                                        ScaffoldMessenger.of(context)
+                                            .showSnackBar(
+                                              const SnackBar(
+                                                duration: Duration(seconds: 2),
+                                                content: Text(
+                                                  'Senha copiada. Clipboard sera limpo em 30 segundos.',
+                                                ),
+                                              ),
+                                            );
                                       },
-                                      icon: const Icon(Icons.key_rounded, size: 15),
+                                      icon: const Icon(
+                                        Icons.key_rounded,
+                                        size: 15,
+                                      ),
                                       label: const Text('Senha'),
                                     ),
                                   ),
-                              ],
-                            ),
-                          ],
-                          if (!collapsed) ...[
-                            if (account.type == 'Steam') ...[
-                              const SizedBox(height: 14),
-                              SteamProfileSummary(steamId: account.steamProfileReference),
-                              const SizedBox(height: 10),
-                              SteamCooldownSummary(account: account),
-                            ],
-                            if (dashboardFields.isNotEmpty) ...[
-                              const SizedBox(height: 14),
-                              ...dashboardFields.map(
-                                (field) => Padding(
-                                  padding: const EdgeInsets.only(bottom: 7),
-                                  child: Row(
-                                    children: [
-                                      Expanded(
-                                        child: Text(
-                                          field.key,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                            color: Colors.grey.shade500,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Flexible(
-                                        child: Text(
-                                          field.value,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                                const SizedBox(width: 4),
+                                IconButton(
+                                  tooltip: gl('Abrir detalhes'),
+                                  onPressed: widget.onTap,
+                                  icon: const Icon(Icons.open_in_new, size: 18),
                                 ),
-                              ),
-                            ],
-                            const SizedBox(height: 12),
-                            Row(
-                              children: [
-                                Icon(
-                                  Icons.shield_outlined,
-                                  size: 17,
-                                  color: securityColor,
-                                ),
-                                const SizedBox(width: 7),
-                                Text(
-                                  'Segurança ${account.securityScore}%',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey.shade400,
-                                  ),
-                                ),
-                                const Spacer(),
-                                Text(
-                                  account.securityScore >= 70
-                                      ? 'Boa'
-                                      : account.securityScore >= 40
-                                      ? 'Atenção'
-                                      : 'Baixa',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: securityColor,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 7),
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(20),
-                              child: LinearProgressIndicator(
-                                value: account.securityScore / 100,
-                                minHeight: 6,
-                                backgroundColor: const Color(0xFF252936),
-                                valueColor: AlwaysStoppedAnimation<Color>(
-                                  securityColor,
-                                ),
-                              ),
-                            ),
-                            const SizedBox(height: 15),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                if (login.isNotEmpty)
-                                  OutlinedButton.icon(
-                                    onPressed: () async {
-                                      await copySecurely(login);
-
-                                      if (!context.mounted) {
-                                        return;
-                                      }
-
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
-                                            const SnackBar(
-                                              duration: Duration(seconds: 2),
-                                              content: Text(
-                                                'Login copiado. Clipboard sera limpo em 30 segundos.',
-                                              ),
-                                            ),
-                                          );
-                                    },
-                                    icon: const Icon(Icons.copy, size: 17),
-                                    label: const Text('Login'),
-                                  ),
-                                if (password.isNotEmpty)
-                                  OutlinedButton.icon(
-                                    onPressed: () async {
-                                      await copySecurely(password);
-
-                                      if (!context.mounted) {
-                                        return;
-                                      }
-
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
-                                            const SnackBar(
-                                              duration: Duration(seconds: 2),
-                                              content: Text(
-                                                'Senha copiada. Clipboard sera limpo em 30 segundos.',
-                                              ),
-                                            ),
-                                          );
-                                    },
-                                    icon: const Icon(
-                                      Icons.key_rounded,
-                                      size: 17,
-                                    ),
-                                    label: const Text('Senha'),
-                                  ),
-                                if (widget.onOpenSteamProfile != null)
-                                  OutlinedButton.icon(
-                                    onPressed: widget.onOpenSteamProfile,
-                                    icon: const Icon(
-                                      Icons.open_in_new,
-                                      size: 17,
-                                    ),
-                                    label: const Text('Perfil Steam'),
-                                  ),
                               ],
                             ),
                           ],
@@ -2709,11 +2929,183 @@ class _AccountCardState extends State<AccountCard> {
   }
 }
 
+class SteamSecuritySummary extends StatelessWidget {
+  final AccountEntry account;
+  final bool compact;
+  const SteamSecuritySummary({
+    super.key,
+    required this.account,
+    this.compact = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<MapEntry<String, SteamCooldownResult>>(
+      stream: SteamCooldownService.changes,
+      builder: (context, event) {
+        final login = (account.fields['Login'] ?? '').trim().toLowerCase();
+        final latest = event.data;
+        final snapshot = latest?.key.trim().toLowerCase() == login
+            ? latest?.value.security ?? account.verifiedSecurity
+            : account.verifiedSecurity;
+        const labels = {
+          'steamGuard': 'Steam Guard',
+          'twoFactor': 'Autenticador móvel',
+          'emailVerified': 'E-mail verificado',
+          'phoneVerified': 'Telefone verificado',
+        };
+        final enabled = labels.keys
+            .where((key) => snapshot?[key] == true)
+            .length;
+        final known = labels.keys.where((key) => snapshot?[key] is bool).length;
+        final color = known == 0
+            ? Colors.grey
+            : enabled == 4
+            ? Colors.greenAccent
+            : Colors.amberAccent;
+        final summary = known == 0
+            ? 'Segurança: não verificada'
+            : 'Proteções: $enabled/4${known < 4 ? ' • consulta parcial' : ''}';
+        final checkedAt = (snapshot?['checkedAt'] as num?)?.toInt();
+        final time = checkedAt == null
+            ? null
+            : DateTime.fromMillisecondsSinceEpoch(checkedAt * 1000).toLocal();
+        final timestamp = time == null
+            ? null
+            : '${time.day.toString().padLeft(2, '0')}/${time.month.toString().padLeft(2, '0')} ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+        final description = labels.entries
+            .map((entry) {
+              final value = snapshot?[entry.key];
+              return '${entry.value}: ${value == true
+                  ? 'confirmado'
+                  : value == false
+                  ? 'não ativo / não verificado'
+                  : 'não informado pela Steam'}';
+            })
+            .join('\n');
+        if (compact) {
+          return SizedBox(
+            height: 28,
+            child: Tooltip(
+              message:
+                  '$description${timestamp == null ? '' : '\nConsultado em $timestamp'}',
+              child: Row(
+                children: [
+                  Icon(Icons.shield_outlined, size: 16, color: color),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      summary,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 12, color: color),
+                    ),
+                  ),
+                  if (known > 0)
+                    const Icon(
+                      Icons.cloud_done_outlined,
+                      size: 15,
+                      color: Colors.grey,
+                    ),
+                ],
+              ),
+            ),
+          );
+        }
+        return Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            color: const Color(0xFF151821),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: const Color(0xFF292D38)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Segurança validada pela Steam',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                timestamp == null
+                    ? 'Clique em Verificar para consultar as proteções da conta.'
+                    : 'Última consulta: $timestamp. O resultado pode mudar na Steam.',
+                style: const TextStyle(color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
+              ...labels.entries.map((entry) {
+                final value = snapshot?[entry.key];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(
+                    children: [
+                      Icon(
+                        value == true
+                            ? Icons.check_circle_outline
+                            : value == false
+                            ? Icons.warning_amber_rounded
+                            : Icons.help_outline,
+                        size: 18,
+                        color: value == true
+                            ? Colors.greenAccent
+                            : value == false
+                            ? Colors.amberAccent
+                            : Colors.grey,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text(entry.value)),
+                      Text(
+                        value == true
+                            ? 'Confirmado'
+                            : value == false
+                            ? 'Não ativo / não verificado'
+                            : 'Não informado',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
+              const SizedBox(height: 6),
+              const Text(
+                'A consulta não confirma códigos de recuperação salvos nem a segurança do seu e-mail.',
+                style: TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+String steamDateLabel(DateTime date) {
+  final local = date.toLocal();
+  String pad(int value) => value.toString().padLeft(2, '0');
+  return '${pad(local.day)}/${pad(local.month)}/${local.year} ${pad(local.hour)}:${pad(local.minute)}';
+}
 
 class SteamCooldownSummary extends StatefulWidget {
+  final DateTime Function()? clock;
+  final bool verificationBusy;
   final AccountEntry account;
 
-  const SteamCooldownSummary({super.key, required this.account});
+  final bool compact;
+  const SteamCooldownSummary({
+    this.clock,
+    this.verificationBusy = false,
+    super.key,
+    required this.account,
+    this.compact = false,
+  });
 
   @override
   State<SteamCooldownSummary> createState() => _SteamCooldownSummaryState();
@@ -2723,6 +3115,10 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
   bool checking = false;
   String? progressMessage;
   SteamCooldownResult? result;
+  StreamSubscription<MapEntry<String, SteamCooldownResult>>?
+  cooldownSubscription;
+  Timer? countdownTimer;
+  int? displayedRemaining;
 
   String get login => widget.account.fields['Login']?.trim() ?? '';
   String get password => widget.account.fields['Senha'] ?? '';
@@ -2731,6 +3127,30 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
   void initState() {
     super.initState();
     result = SteamCooldownService.cached(login);
+    countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || result?.hasTimedCooldown != true) return;
+      final remaining = result!.remainingSecondsAt(
+        widget.clock?.call() ?? DateTime.now(),
+      );
+      if (remaining != displayedRemaining) {
+        setState(() => displayedRemaining = remaining);
+      }
+    });
+    cooldownSubscription = SteamCooldownService.changes.listen((event) {
+      if (!mounted ||
+          event.value.detailsOnly ||
+          event.key.trim().toLowerCase() != login.toLowerCase()) {
+        return;
+      }
+      setState(() => result = event.value);
+    });
+  }
+
+  @override
+  void dispose() {
+    cooldownSubscription?.cancel();
+    countdownTimer?.cancel();
+    super.dispose();
   }
 
   Future<String?> _askGuardCode(String title, String hint) async {
@@ -2738,22 +3158,28 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
   }
 
   Future<void> _check() async {
-    if (checking) return;
+    if (checking || widget.verificationBusy) return;
 
-    setState(() { checking = true; progressMessage = null; });
+    setState(() {
+      checking = true;
+      progressMessage = null;
+    });
 
     var next = await SteamCooldownService.check(
       username: login,
       password: password,
       profileReference: widget.account.steamProfileReference,
-      onProgress: (progress) { if (mounted) setState(() => progressMessage = progress.message); },
+      onProgress: (progress) {
+        if (mounted) setState(() => progressMessage = progress.message);
+      },
     );
 
     if (!mounted) return;
 
     if (next.needsSteamGuard) {
       setState(() => progressMessage = null);
-      final mobile = next.guardType == 'mobile' || next.status == 'two_factor_required';
+      final mobile =
+          next.guardType == 'mobile' || next.status == 'two_factor_required';
       final code = await _askGuardCode(
         'Steam Guard',
         mobile ? 'Codigo do autenticador' : 'Codigo recebido por e-mail',
@@ -2779,6 +3205,7 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
   }
 
   String _durationLabel(int totalSeconds) {
+    if (totalSeconds < 60) return '${totalSeconds}s';
     final duration = Duration(seconds: totalSeconds);
     final days = duration.inDays;
     final hours = duration.inHours.remainder(24);
@@ -2794,6 +3221,7 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
   @override
   Widget build(BuildContext context) {
     final current = result;
+    final now = widget.clock?.call() ?? DateTime.now();
     final hasCredentials = login.isNotEmpty && password.isNotEmpty;
 
     Color statusColor = Colors.grey;
@@ -2801,18 +3229,22 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
     String label = 'Cooldown CS2 nao verificado';
 
     if (current != null) {
-      if (current.status == 'ok' && current.hasCooldown) {
-        statusColor = Colors.orangeAccent;
-        icon = Icons.timer_outlined;
-        label = 'Cooldown ativo: ${_durationLabel(current.penaltySeconds)}';
-      } else if (current.status == 'ok' && current.vacBanned) {
+      if (current.status == 'ok' && current.vacBanned) {
         statusColor = Colors.redAccent;
         icon = Icons.block;
         label = 'VAC sinalizado pelo GC';
+      } else if (current.status == 'ok' && current.hasCooldown) {
+        statusColor = Colors.orangeAccent;
+        icon = Icons.timer_outlined;
+        label = current.cooldownElapsedAt(now)
+            ? 'Prazo encerrado; verifique novamente'
+            : current.penaltySeconds > 2147483647
+            ? 'Penalidade ativa: prazo não determinado'
+            : 'Cooldown ativo: ${_durationLabel(current.remainingSecondsAt(now))}';
       } else if (current.status == 'ok') {
         statusColor = Colors.greenAccent;
         icon = Icons.verified_outlined;
-        label = 'Sem cooldown ativo';
+        label = 'Sem penalidade';
       } else {
         statusColor = Colors.amberAccent;
         icon = Icons.info_outline;
@@ -2825,6 +3257,7 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
     if (checking && progressMessage != null) label = progressMessage!;
 
     return Container(
+      height: widget.compact ? 72 : null,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
       decoration: BoxDecoration(
         color: statusColor.withValues(alpha: 0.06),
@@ -2841,28 +3274,77 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
               children: [
                 Text(
                   label,
-                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+                  maxLines: widget.compact
+                      ? current?.hasTimedCooldown == true
+                            ? 1
+                            : 2
+                      : null,
+                  overflow: widget.compact ? TextOverflow.ellipsis : null,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
-                if (current?.status == 'ok' && current!.penaltyReason > 0)
+                if (current?.cooldownEndsAt != null)
+                  Text(
+                    '${gl('Término previsto')}: ${steamDateLabel(current!.cooldownEndsAt!)}',
+                    maxLines: widget.compact ? 1 : null,
+                    overflow: widget.compact ? TextOverflow.ellipsis : null,
+                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                  ),
+                if (current?.checkedAt != null &&
+                    (!widget.compact || current?.cooldownEndsAt == null))
+                  Text(
+                    '${gl('Última consulta')}: ${steamDateLabel(current!.checkedAt!)}',
+                    maxLines: widget.compact ? 1 : null,
+                    overflow: widget.compact ? TextOverflow.ellipsis : null,
+                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                  ),
+                if (!widget.compact &&
+                    current?.status == 'ok' &&
+                    current!.hasCooldown &&
+                    current.penaltyReason > 0)
                   Text(
                     'Motivo GC: ${current.penaltyReason}',
                     style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
                   ),
                 if (current?.status == 'ok') ...[
-                  Text(current!.prime == null ? 'Prime: não confirmado'
-                      : current.prime! ? 'Prime ativo' : 'Sem Prime',
-                      style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
-                  if (current.cs2Level != null && current.cs2Level! > 0)
-                    Text('Nível CS2: ${current.cs2Level}', style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
-                  if (current.shouldShowCompetitiveAccess)
-                    Text('Competitivo: não confirmado', style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
+                  Text(
+                    current!.prime == null
+                        ? 'Prime: não confirmado'
+                        : current.prime!
+                        ? 'Prime ativo'
+                        : 'Sem Prime',
+                    style: TextStyle(fontSize: 10, color: Colors.grey.shade400),
+                  ),
+                  if (!widget.compact &&
+                      current.cs2Level != null &&
+                      current.cs2Level! > 0)
+                    Text(
+                      'Nível CS2: ${current.cs2Level}',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.grey.shade400,
+                      ),
+                    ),
+                  if (!widget.compact && current.shouldShowCompetitiveAccess)
+                    Text(
+                      'Competitivo: não confirmado',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.grey.shade400,
+                      ),
+                    ),
                 ],
-                if (current?.sessionWarning != null)
+                if (!widget.compact && current?.sessionWarning != null)
                   Text(
                     current!.sessionWarning!,
-                    style: TextStyle(fontSize: 10, color: Colors.amber.shade300),
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: Colors.amber.shade300,
+                    ),
                   ),
-                if (current?.groupMessage != null)
+                if (!widget.compact && current?.groupMessage != null)
                   Text(
                     current!.groupMessage!,
                     style: TextStyle(
@@ -2877,7 +3359,9 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
           ),
           const SizedBox(width: 8),
           TextButton.icon(
-            onPressed: checking || !hasCredentials ? null : _check,
+            onPressed: checking || widget.verificationBusy || !hasCredentials
+                ? null
+                : _check,
             icon: checking
                 ? const SizedBox(
                     width: 13,
@@ -2971,7 +3455,8 @@ class _SteamProfileSummaryState extends State<SteamProfileSummary> {
     return FutureBuilder<SteamPublicProfile?>(
       future: profileFuture,
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting && lastProfile == null) {
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            lastProfile == null) {
           return Row(
             children: [
               const SizedBox(
@@ -3014,17 +3499,19 @@ class _SteamProfileSummaryState extends State<SteamProfileSummary> {
                     )
                   : Image.network(
                       profile.avatarUrl,
-                      key: ValueKey('${profile.avatarUrl}:$retries:$photoRevision'),
+                      key: ValueKey(
+                        '${profile.avatarUrl}:$retries:$photoRevision',
+                      ),
                       width: 34,
                       height: 34,
                       fit: BoxFit.cover,
                       errorBuilder: (_, _, _) {
                         _scheduleRetry();
                         return Container(
-                        width: 34,
-                        height: 34,
-                        color: const Color(0xFF232735),
-                        child: const Icon(Icons.person, size: 18),
+                          width: 34,
+                          height: 34,
+                          color: const Color(0xFF232735),
+                          child: const Icon(Icons.person, size: 18),
                         );
                       },
                     ),
@@ -3080,11 +3567,29 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
   late AccountEntry account;
 
   bool showPasswords = false;
+  StreamSubscription<MapEntry<String, SteamCooldownResult>>?
+  snapshotSubscription;
 
   @override
   void initState() {
     super.initState();
     account = widget.account;
+    snapshotSubscription = SteamCooldownService.changes.listen((event) {
+      if (!mounted ||
+          event.key.trim().toLowerCase() !=
+              (account.fields['Login'] ?? '').trim().toLowerCase()) {
+        return;
+      }
+      final changed = account.applySteamSnapshot(event.value);
+      setState(() {});
+      if (changed) unawaited(widget.onChanged(account));
+    });
+  }
+
+  @override
+  void dispose() {
+    snapshotSubscription?.cancel();
+    super.dispose();
   }
 
   Future<void> edit() async {
@@ -3146,12 +3651,20 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
       appBar: AppBar(
         title: Text(account.displayName),
         actions: [
-          if (account.type == 'Steam') IconButton(
-            tooltip: 'Dados Steam', icon: const Icon(Icons.sports_esports_outlined),
-            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => SteamAccountScreen(
-              username: account.fields['Login'] ?? '', password: account.fields['Senha'] ?? '',
-            ))),
-          ),
+          if (account.type == 'Steam')
+            IconButton(
+              tooltip: 'Dados Steam',
+              icon: const Icon(Icons.sports_esports_outlined),
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => SteamAccountScreen(
+                    username: account.fields['Login'] ?? '',
+                    password: account.fields['Senha'] ?? '',
+                  ),
+                ),
+              ),
+            ),
           IconButton(
             tooltip: gl('Editar'),
             onPressed: edit,
@@ -3187,8 +3700,12 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
                         borderRadius: BorderRadius.circular(18),
                       ),
                       child: account.type == 'Steam'
-                          ? SteamAccountAvatar(reference: account.steamProfileReference,
-                              login: account.fields['Login'] ?? '', size: 64, radius: 18)
+                          ? SteamAccountAvatar(
+                              reference: account.steamProfileReference,
+                              login: account.fields['Login'] ?? '',
+                              size: 64,
+                              radius: 18,
+                            )
                           : const Icon(Icons.videogame_asset, size: 32),
                     ),
                     const SizedBox(width: 18),
@@ -3231,7 +3748,9 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        SteamProfileSummary(steamId: account.steamProfileReference),
+                        SteamProfileSummary(
+                          steamId: account.steamProfileReference,
+                        ),
                         const SizedBox(height: 10),
                         SteamCooldownSummary(account: account),
                       ],
@@ -3239,65 +3758,68 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
                   ),
                 ],
                 const SizedBox(height: 22),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF151821),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: const Color(0xFF292D38)),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          const Icon(
-                            Icons.shield_outlined,
-                            color: Color(0xFF9A87FF),
-                          ),
-                          const SizedBox(width: 10),
-                          Text(
-                            'Segurança ${account.securityScore}%',
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w700,
+                if (account.type == 'Steam')
+                  SteamSecuritySummary(account: account)
+                else
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(18),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF151821),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: const Color(0xFF292D38)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.shield_outlined,
+                              color: Color(0xFF9A87FF),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      LinearProgressIndicator(
-                        value: account.securityScore / 100,
-                        minHeight: 7,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      const SizedBox(height: 16),
-                      securityItem('E-mail vinculado', email.isNotEmpty),
-                      securityItem('Telefone vinculado', phone.isNotEmpty),
-                      securityItem(
-                        '2FA / autenticador ativo',
-                        account.security['twoFactor'] == true,
-                      ),
-                      securityItem(
-                        'Recovery Code salvo',
-                        account.security['recoveryCode'] == true,
-                      ),
-                      securityItem(
-                        'Backup Codes salvos',
-                        account.security['backupCodes'] == true,
-                      ),
-                      securityItem(
-                        'E-mail verificado',
-                        account.security['emailVerified'] == true,
-                      ),
-                      securityItem(
-                        'Telefone verificado',
-                        account.security['phoneVerified'] == true,
-                      ),
-                    ],
+                            const SizedBox(width: 10),
+                            Text(
+                              'Segurança ${account.securityScore}%',
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        LinearProgressIndicator(
+                          value: account.securityScore / 100,
+                          minHeight: 7,
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        const SizedBox(height: 16),
+                        securityItem('E-mail vinculado', email.isNotEmpty),
+                        securityItem('Telefone vinculado', phone.isNotEmpty),
+                        securityItem(
+                          '2FA / autenticador ativo',
+                          account.security['twoFactor'] == true,
+                        ),
+                        securityItem(
+                          'Recovery Code salvo',
+                          account.security['recoveryCode'] == true,
+                        ),
+                        securityItem(
+                          'Backup Codes salvos',
+                          account.security['backupCodes'] == true,
+                        ),
+                        securityItem(
+                          'E-mail verificado',
+                          account.security['emailVerified'] == true,
+                        ),
+                        securityItem(
+                          'Telefone verificado',
+                          account.security['phoneVerified'] == true,
+                        ),
+                      ],
+                    ),
                   ),
-                ),
                 const SizedBox(height: 24),
                 ...account.fields.entries.map((field) {
                   final isPassword = field.key.toLowerCase().contains('senha');
@@ -3322,7 +3844,7 @@ class _AccountDetailsScreenState extends State<AccountDetailsScreen> {
                         Expanded(
                           child: SelectableText(
                             empty
-                                ? 'Não informado'
+                                ? account.fieldDisplayValue(field.key)
                                 : isPassword && !showPasswords
                                 ? '••••••••••••'
                                 : field.value,
@@ -3632,6 +4154,17 @@ class _AccountFormScreenState extends State<AccountFormScreen> {
         fields: fields,
         favorite: widget.account?.favorite ?? false,
         dashboardFields: savedDashboardFields,
+        steamCs2Minutes:
+            widget.account?.fields['Login']?.trim().toLowerCase() ==
+                loginController.text.trim().toLowerCase()
+            ? widget.account?.steamCs2Minutes
+            : null,
+        verifiedSecurity:
+            widget.account?.type == 'Steam' &&
+                widget.account?.fields['Login']?.trim().toLowerCase() ==
+                    loginController.text.trim().toLowerCase()
+            ? widget.account?.verifiedSecurity
+            : null,
         security: {
           'twoFactor': twoFactor,
           'recoveryCode': recoveryCode,
@@ -3803,7 +4336,9 @@ class _AccountFormScreenState extends State<AccountFormScreen> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'O score é um checklist de preparação e não garante que a conta não será comprometida.',
+                  accountType == 'Steam'
+                      ? 'As proteções são consultadas na Steam ao verificar a conta. Os dados abaixo são anotações opcionais e não comprovam a segurança.'
+                      : 'O score é um checklist de preparação e não garante que a conta não será comprometida.',
                   style: TextStyle(color: Colors.grey.shade500),
                 ),
                 const SizedBox(height: 18),
@@ -3852,56 +4387,58 @@ class _AccountFormScreenState extends State<AccountFormScreen> {
                 ),
                 dashboardToggle('Telefone vinculado'),
                 const SizedBox(height: 8),
-                SwitchListTile(
-                  value: twoFactor,
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('2FA / autenticador ativo'),
-                  onChanged: (value) {
-                    setState(() {
-                      twoFactor = value;
-                    });
-                  },
-                ),
-                SwitchListTile(
-                  value: recoveryCode,
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Recovery Code salvo'),
-                  onChanged: (value) {
-                    setState(() {
-                      recoveryCode = value;
-                    });
-                  },
-                ),
-                SwitchListTile(
-                  value: backupCodes,
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Backup Codes salvos'),
-                  onChanged: (value) {
-                    setState(() {
-                      backupCodes = value;
-                    });
-                  },
-                ),
-                SwitchListTile(
-                  value: emailVerified,
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('E-mail verificado'),
-                  onChanged: (value) {
-                    setState(() {
-                      emailVerified = value;
-                    });
-                  },
-                ),
-                SwitchListTile(
-                  value: phoneVerified,
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Telefone verificado'),
-                  onChanged: (value) {
-                    setState(() {
-                      phoneVerified = value;
-                    });
-                  },
-                ),
+                if (accountType != 'Steam') ...[
+                  SwitchListTile(
+                    value: twoFactor,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('2FA / autenticador ativo'),
+                    onChanged: (value) {
+                      setState(() {
+                        twoFactor = value;
+                      });
+                    },
+                  ),
+                  SwitchListTile(
+                    value: recoveryCode,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Recovery Code salvo'),
+                    onChanged: (value) {
+                      setState(() {
+                        recoveryCode = value;
+                      });
+                    },
+                  ),
+                  SwitchListTile(
+                    value: backupCodes,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Backup Codes salvos'),
+                    onChanged: (value) {
+                      setState(() {
+                        backupCodes = value;
+                      });
+                    },
+                  ),
+                  SwitchListTile(
+                    value: emailVerified,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('E-mail verificado'),
+                    onChanged: (value) {
+                      setState(() {
+                        emailVerified = value;
+                      });
+                    },
+                  ),
+                  SwitchListTile(
+                    value: phoneVerified,
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Telefone verificado'),
+                    onChanged: (value) {
+                      setState(() {
+                        phoneVerified = value;
+                      });
+                    },
+                  ),
+                ],
                 const SizedBox(height: 28),
                 const Divider(),
                 const SizedBox(height: 18),
@@ -5790,9 +6327,14 @@ class PlanBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<PlanInfo>(
-      valueListenable: PlanService.current,
-      builder: (context, plan, child) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        PlanService.current,
+        PlanService.lookupError,
+        PlanService.refreshing,
+      ]),
+      builder: (context, child) {
+        final plan = PlanService.current.value;
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 8),
           child: FilledButton.tonalIcon(
@@ -5812,7 +6354,9 @@ class PlanBadge extends StatelessWidget {
               size: 17,
             ),
             label: Text(
-              plan.label,
+              PlanService.lookupError.value == null
+                  ? plan.label
+                  : gl('Plano indisponivel'),
               style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
             ),
           ),
@@ -5829,9 +6373,14 @@ class PlanScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<PlanInfo>(
-      valueListenable: PlanService.current,
-      builder: (context, plan, child) {
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        PlanService.current,
+        PlanService.lookupError,
+        PlanService.refreshing,
+      ]),
+      builder: (context, child) {
+        final plan = PlanService.current.value;
         final limit = plan.accountLimit;
 
         final double progress;
@@ -5862,83 +6411,118 @@ class PlanScreen extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(height: 18),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(22),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF151821),
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: const Color(0xFF292D38)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                    if (PlanService.refreshing.value)
+                      const Column(
                         children: [
-                          Row(
+                          Text('Consultando plano'),
+                          SizedBox(height: 12),
+                          LinearProgressIndicator(),
+                        ],
+                      )
+                    else if (PlanService.lookupError.value != null)
+                      Card(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 6,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: plan.isPro
-                                      ? const Color(0xFF48389A)
-                                      : const Color(0xFF292D38),
-                                  borderRadius: BorderRadius.circular(30),
-                                ),
-                                child: Text(
-                                  plan.label,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
+                              Text(PlanService.lookupError.value!),
+                              const SizedBox(height: 12),
+                              FilledButton.icon(
+                                onPressed: PlanService.refreshing.value
+                                    ? null
+                                    : () async {
+                                        try {
+                                          await AccountService.refreshPlan();
+                                        } catch (_) {}
+                                      },
+                                icon: const Icon(Icons.refresh),
+                                label: const Text('Tentar novamente'),
                               ),
-                              const Spacer(),
-                              if (plan.isPro)
-                                Text(
-                                  'Ativo',
-                                  style: TextStyle(
-                                    color: Colors.greenAccent.shade100,
-                                  ),
-                                ),
                             ],
                           ),
-                          const SizedBox(height: 20),
-                          if (!plan.isPro) ...[
-                            Text(
-                              '$accountCount / ${PlanService.freeAccountLimit} contas utilizadas',
-                              style: const TextStyle(
-                                fontSize: 17,
-                                fontWeight: FontWeight.w600,
+                        ),
+                      )
+                    else
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(22),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF151821),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: const Color(0xFF292D38)),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: plan.isPro
+                                        ? const Color(0xFF48389A)
+                                        : const Color(0xFF292D38),
+                                    borderRadius: BorderRadius.circular(30),
+                                  ),
+                                  child: Text(
+                                    PlanService.lookupError.value == null
+                                        ? plan.label
+                                        : gl('Plano indisponivel'),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                ),
+                                const Spacer(),
+                                if (plan.isPro)
+                                  Text(
+                                    'Ativo',
+                                    style: TextStyle(
+                                      color: Colors.greenAccent.shade100,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                            const SizedBox(height: 20),
+                            if (!plan.isPro) ...[
+                              Text(
+                                '$accountCount / ${PlanService.freeAccountLimit} contas utilizadas',
+                                style: const TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
-                            ),
-                            const SizedBox(height: 10),
-                            LinearProgressIndicator(
-                              value: progress,
-                              minHeight: 8,
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              PlanService.remainingAccounts(accountCount) == 0
-                                  ? 'Limite FREE atingido.'
-                                  : '${PlanService.remainingAccounts(accountCount)} contas restantes no plano FREE.',
-                              style: TextStyle(color: Colors.grey.shade400),
-                            ),
-                          ] else ...[
-                            const Text(
-                              'Contas ilimitadas',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w700,
+                              const SizedBox(height: 10),
+                              LinearProgressIndicator(
+                                value: progress,
+                                minHeight: 8,
+                                borderRadius: BorderRadius.circular(20),
                               ),
-                            ),
+                              const SizedBox(height: 10),
+                              Text(
+                                PlanService.remainingAccounts(accountCount) == 0
+                                    ? 'Limite FREE atingido.'
+                                    : '${PlanService.remainingAccounts(accountCount)} contas restantes no plano FREE.',
+                                style: TextStyle(color: Colors.grey.shade400),
+                              ),
+                            ] else ...[
+                              const Text(
+                                'Contas ilimitadas',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
+                            const SizedBox(height: 12),
+                            PlanValidity(plan: plan),
                           ],
-                          const SizedBox(height: 12),
-                          PlanValidity(plan: plan),
-                        ],
+                        ),
                       ),
-                    ),
                     const SizedBox(height: 26),
                     if (gamerLockerMicrosoftStoreBuild)
                       _StoreEditionCard()
@@ -6290,7 +6874,7 @@ class _ActivateKeyScreenState extends State<ActivateKeyScreen> {
               result.isLifetime
                   ? 'PRO vitalício — sem vencimento'
                   : '${result.daysAdded} dias adicionados.'
-                    '${expiresText.isEmpty ? '' : '\n\nValido ate: $expiresText'}',
+                        '${expiresText.isEmpty ? '' : '\n\nValido ate: $expiresText'}',
             ),
             actions: [
               FilledButton(
@@ -6359,7 +6943,9 @@ class _ActivateKeyScreenState extends State<ActivateKeyScreen> {
                   builder: (context, plan, _) => PlanValidity(plan: plan),
                 ),
                 const SizedBox(height: 12),
-                const Text('Ative uma chave por vez. Os períodos são somados à validade atual.'),
+                const Text(
+                  'Ative uma chave por vez. Os períodos são somados à validade atual.',
+                ),
                 const SizedBox(height: 12),
                 TextField(
                   controller: controller,

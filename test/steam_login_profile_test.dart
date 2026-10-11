@@ -25,8 +25,6 @@ void main() {
                 onDelete: () {},
                 onToggleFavorite: () {},
                 onOpenSteamProfile: null,
-                isExpanded: true,
-                onToggleExpanded: () {},
               ),
             ),
           ),

@@ -47,9 +47,23 @@ class AccountService {
     await _client.auth.signOut();
 
     PlanService.current.value = const PlanInfo(tier: PlanTier.free);
+    PlanService.lookupError.value = null;
   }
 
   static Future<void> refreshPlan() async {
+    PlanService.refreshing.value = true;
+    PlanService.lookupError.value = null;
+    try {
+      await _refreshPlan();
+    } catch (_) {
+      PlanService.lookupError.value = 'Não foi possível consultar o plano.';
+      rethrow;
+    } finally {
+      PlanService.refreshing.value = false;
+    }
+  }
+
+  static Future<void> _refreshPlan() async {
     if (!isLoggedIn) {
       PlanService.current.value = const PlanInfo(tier: PlanTier.free);
       return;
@@ -66,8 +80,7 @@ class AccountService {
     }
 
     if (data == null) {
-      PlanService.current.value = const PlanInfo(tier: PlanTier.free);
-      return;
+      throw StateError('Resposta de licença ausente.');
     }
 
     final plan = data['plan']?.toString();
@@ -77,6 +90,10 @@ class AccountService {
     final proUntil = proUntilRaw == null
         ? null
         : DateTime.tryParse(proUntilRaw);
+    if (plan != 'free' && plan != 'pro' ||
+        proUntilRaw != null && proUntil == null) {
+      throw StateError('Resposta de licença inválida.');
+    }
 
     PlanService.current.value = PlanInfo(
       tier: plan == 'pro' ? PlanTier.pro : PlanTier.free,

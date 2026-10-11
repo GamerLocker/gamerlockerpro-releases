@@ -51,6 +51,8 @@ class PlanInfo {
 
 class PlanService {
   PlanService._();
+  static final lookupError = ValueNotifier<String?>(null);
+  static final refreshing = ValueNotifier<bool>(false);
 
   static const int freeAccountLimit = 3;
 

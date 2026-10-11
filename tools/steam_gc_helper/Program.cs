@@ -74,17 +74,33 @@ var cmReconnectAttempts = 0;
 var helperLoginId = (uint)System.Security.Cryptography.RandomNumberGenerator.GetInt32(1, int.MaxValue);
 Task<SteamGroupResult>? groupJoinTask = null;
 Task<SteamDetails>? detailsTask = null;
+Task<SteamSecuritySnapshot>? securityTask = null;
+Task<string?>? phoneTask = null;
 string? profileSteamId = null;
 string? profileAvatarUrl = null;
 string? profileName = null;
+string? linkedEmail = null;
+manager.Subscribe<SteamUser.EmailAddrInfoCallback>(callback => {
+    linkedEmail = string.IsNullOrWhiteSpace(callback.EmailAddress) ? null : callback.EmailAddress;
+});
 
 void Finish(Result value)
 {
     if (finished) return;
-    result = value with { SessionWarning = sessionWarning };
+    result = value with { SessionWarning = sessionWarning,
+        CheckedAt = value.Status == "ok" && !request.DetailsOnly ? DateTimeOffset.UtcNow.ToUnixTimeSeconds() : null };
     finished = true;
     helloTimer?.Dispose();
     matchmakingTimer?.Dispose();
+}
+
+async Task<string?> ReadVerifiedPhone()
+{
+    // Avoid an extra web-token exchange when Steam has not confirmed a phone.
+    if (securityTask is null || savedSession is null) return null;
+    var security = await securityTask;
+    return security.PhoneVerified == true
+        ? await SteamContactDetails.FetchPhoneAsync(client, savedSession.RefreshToken) : null;
 }
 
 void SendGcHello()
@@ -261,6 +277,9 @@ manager.Subscribe<SteamUser.LoggedOnCallback>(async callback =>
         sessionWarning = "Nao foi possivel salvar a sessao Steam. O Steam Guard pode ser solicitado novamente.";
     if (pendingSession is not null) savedSession = pendingSession;
 
+    securityTask = SteamSecurity.FetchAsync(client);
+    if (savedSession is not null)
+        phoneTask = ReadVerifiedPhone();
     profileSteamId = client.SteamID!.ConvertToUInt64().ToString();
     friends!.RequestFriendInfo(client.SteamID,
         EClientPersonaStateFlag.PlayerName | EClientPersonaStateFlag.Presence);
@@ -315,12 +334,13 @@ manager.Subscribe<SteamGameCoordinator.MessageCallback>(callback =>
             if (GcWelcomeStatus.TryRead(welcome.GameData2, client.SteamID!.AccountID, out var account))
             {
                 Finish(new Result("ok",
-                    PenaltySeconds: checked((int)(account!.PenaltySeconds ?? 0)),
-                    PenaltyReason: checked((int)(account.PenaltyReason ?? 0)),
+                    PenaltySeconds: GcPenalty.RemainingSeconds(account!.PenaltySeconds ?? 0, account.PenaltyReason ?? 0),
+                    PenaltyReason: (long)(account.PenaltyReason ?? 0),
                     VacBanned: account.VacBanned != 0,
                     Cs2Level: account.PlayerLevel,
+                    PremierRating: GcWelcomeStatus.ReadPremier(account.Rankings, account.Ranking, client.SteamID.AccountID),
                     Prime: GcWelcomeStatus.ReadPrime(welcome, client.SteamID.ConvertToUInt64()),
-                    Message: account.PenaltySeconds > 0 ? "Cooldown ativo." : "Sem cooldown ativo."));
+                    Message: GcPenalty.RemainingSeconds(account.PenaltySeconds ?? 0, account.PenaltyReason ?? 0) > 0 ? "Cooldown ativo." : "Sem penalidade."));
                 return;
             }
         }
@@ -347,8 +367,8 @@ manager.Subscribe<SteamGameCoordinator.MessageCallback>(callback =>
             {
                 Finish(new Result(
                     "ok",
-                    PenaltySeconds: checked((int)body.Seconds),
-                    PenaltyReason: checked((int)body.Reason),
+                    PenaltySeconds: GcPenalty.RemainingSeconds(body.Seconds, body.Reason),
+                    PenaltyReason: (long)body.Reason,
                     VacBanned: false,
                     Message: "Cooldown ativo (notificacao do GC)."));
             }
@@ -371,11 +391,12 @@ manager.Subscribe<SteamGameCoordinator.MessageCallback>(callback =>
         var body = message.Body;
         Finish(new Result(
             "ok",
-            PenaltySeconds: checked((int)body.PenaltySeconds),
-            PenaltyReason: checked((int)body.PenaltyReason),
+            PenaltySeconds: GcPenalty.RemainingSeconds(body.PenaltySeconds, body.PenaltyReason),
+            PenaltyReason: (long)body.PenaltyReason,
             VacBanned: body.VacBanned != 0,
             Cs2Level: body.PlayerLevel,
-            Message: body.PenaltySeconds > 0 ? "Cooldown ativo." : "Sem cooldown ativo."));
+            PremierRating: GcWelcomeStatus.ReadPremier(body.Rankings, body.Ranking, client.SteamID!.AccountID),
+            Message: GcPenalty.RemainingSeconds(body.PenaltySeconds, body.PenaltyReason) > 0 ? "Cooldown ativo." : "Sem penalidade."));
     }
     catch (Exception ex)
     {
@@ -439,9 +460,24 @@ if (detailsTask is not null)
     if (detailsTask.IsCompletedSuccessfully && result is not null)
         result = result with { AccountDetails = detailsTask.Result };
 }
+if (securityTask is not null)
+{
+    var securityDeadline = DateTime.UtcNow.AddSeconds(8);
+    while (!securityTask.IsCompleted && client.IsConnected && DateTime.UtcNow < securityDeadline)
+        manager.RunWaitCallbacks(TimeSpan.FromMilliseconds(100));
+    if (securityTask.IsCompletedSuccessfully && result is not null)
+        result = result with { Security = securityTask.Result };
+}
 if (result is not null) result = result with {
-    SteamId64 = profileSteamId, AvatarUrl = profileAvatarUrl, PersonaName = profileName,
+    SteamId64 = profileSteamId, AvatarUrl = profileAvatarUrl, PersonaName = profileName, LinkedEmail = linkedEmail,
 };
+if (phoneTask is not null && result is not null)
+{
+    var phoneDeadline = DateTime.UtcNow.AddSeconds(8);
+    while (!phoneTask.IsCompleted && client.IsConnected && DateTime.UtcNow < phoneDeadline)
+        manager.RunWaitCallbacks(TimeSpan.FromMilliseconds(100));
+    if (phoneTask.IsCompletedSuccessfully) result = result with { LinkedPhone = phoneTask.Result };
+}
 try { client.Disconnect(); } catch { }
 WriteResult(result ?? new Result("error", Message: "Resultado desconhecido."));
 
@@ -465,8 +501,8 @@ sealed record Request(
 
 sealed record Result(
     string Status,
-    int PenaltySeconds = 0,
-    int PenaltyReason = 0,
+    long PenaltySeconds = 0,
+    long PenaltyReason = 0,
     bool VacBanned = false,
     string? Message = null,
     string? GuardType = null,
@@ -478,7 +514,12 @@ sealed record Result(
     string? PersonaName = null,
     SteamDetails? AccountDetails = null,
     int? Cs2Level = null,
-    bool? Prime = null);
+    bool? Prime = null,
+    SteamSecuritySnapshot? Security = null,
+    string? LinkedEmail = null,
+    uint? PremierRating = null,
+    string? LinkedPhone = null,
+    long? CheckedAt = null);
 
 sealed class GuardCodeRequiredException : Exception
 {
@@ -564,6 +605,8 @@ sealed class CsgoMatchmakingClientHello : IExtensible
 sealed class CsgoMatchmakingGcHello : IExtensible
 {
     [ProtoMember(17)] public int? PlayerLevel { get; set; }
+    [ProtoMember(7)] public GcPlayerRanking? Ranking { get; set; }
+    [ProtoMember(20)] public List<GcPlayerRanking> Rankings { get; set; } = [];
     [ProtoMember(4)] public uint PenaltySeconds { get; set; }
     [ProtoMember(5)] public uint PenaltyReason { get; set; }
     [ProtoMember(6)] public int VacBanned { get; set; }

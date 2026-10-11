@@ -20,6 +20,13 @@ class SteamCooldownResult {
   final Map<String, dynamic>? accountDetails;
   final int? cs2Level;
   final bool? prime;
+  final Map<String, dynamic>? security;
+  final String? linkedEmail;
+  final String? linkedPhone;
+  final int? premierRating;
+  final bool detailsOnly;
+  final DateTime? checkedAt;
+  final DateTime? cooldownEndsAt;
 
   const SteamCooldownResult({
     required this.status,
@@ -37,19 +44,59 @@ class SteamCooldownResult {
     this.accountDetails,
     this.cs2Level,
     this.prime,
+    this.security,
+    this.linkedEmail,
+    this.linkedPhone,
+    this.premierRating,
+    this.detailsOnly = false,
+    this.checkedAt,
+    this.cooldownEndsAt,
   });
 
   bool get hasCooldown => status == 'ok' && penaltySeconds > 0;
+  bool get hasTimedCooldown => hasCooldown && penaltySeconds <= 2147483647;
+  int remainingSecondsAt(DateTime now) {
+    if (!hasTimedCooldown || cooldownEndsAt == null) return penaltySeconds;
+    final remaining = cooldownEndsAt!.difference(now).inMicroseconds;
+    return remaining <= 0
+        ? 0
+        : (remaining / Duration.microsecondsPerSecond).ceil();
+  }
+
+  bool cooldownElapsedAt(DateTime now) =>
+      hasTimedCooldown && remainingSecondsAt(now) == 0;
+  bool clearAt(DateTime now) =>
+      status == 'ok' && !detailsOnly && !vacBanned && !hasCooldown;
   bool get shouldShowCompetitiveAccess => status == 'ok' && prime == false;
   bool get needsSteamGuard =>
       status == 'steam_guard_required' || status == 'two_factor_required';
 
   factory SteamCooldownResult.fromJson(Map<String, dynamic> json) {
+    final seconds = int.tryParse(json['penaltySeconds']?.toString() ?? '') ?? 0;
+    final reason = int.tryParse(json['penaltyReason']?.toString() ?? '') ?? 0;
+    final remaining = remainingPenaltySeconds(seconds, reason);
+    final timestamp = (json['checkedAt'] as num?)?.toInt();
+    final checked = timestamp != null && timestamp > 0
+        ? DateTime.fromMillisecondsSinceEpoch(timestamp * 1000, isUtc: true)
+        : json['status'] == 'ok' && json['detailsOnly'] != true
+        ? DateTime.now()
+        : null;
     return SteamCooldownResult(
+      checkedAt: checked,
+      cooldownEndsAt:
+          checked != null && remaining > 0 && remaining <= 2147483647
+          ? checked.add(Duration(seconds: remaining))
+          : null,
+      detailsOnly: json['detailsOnly'] == true,
+      linkedEmail: json['linkedEmail']?.toString(),
+      linkedPhone: json['linkedPhone']?.toString(),
+      premierRating: (json['premierRating'] as num?)?.toInt(),
+      security: json['security'] is Map
+          ? Map<String, dynamic>.from(json['security'] as Map)
+          : null,
       status: json['status']?.toString() ?? 'error',
-      penaltySeconds:
-          int.tryParse(json['penaltySeconds']?.toString() ?? '') ?? 0,
-      penaltyReason: int.tryParse(json['penaltyReason']?.toString() ?? '') ?? 0,
+      penaltySeconds: remaining,
+      penaltyReason: reason,
       vacBanned: json['vacBanned'] == true,
       message: json['message']?.toString(),
       guardType: json['guardType']?.toString(),
@@ -68,9 +115,25 @@ class SteamCooldownResult {
   }
 }
 
+DateTime? unixDate(dynamic value) {
+  final seconds = int.tryParse(value?.toString() ?? '');
+  return seconds != null && seconds > 0
+      ? DateTime.fromMillisecondsSinceEpoch(seconds * 1000, isUtc: true)
+      : null;
+}
+
+int remainingPenaltySeconds(int seconds, int reason) =>
+    seconds > 2147483647 && (reason == 22 || reason == 23) ? 0 : seconds;
+
 class SteamCooldownService {
   SteamCooldownService._();
 
+  static final _changes =
+      StreamController<MapEntry<String, SteamCooldownResult>>.broadcast();
+  static Stream<MapEntry<String, SteamCooldownResult>> get changes =>
+      _changes.stream;
+  static void notifyResult(String login, SteamCooldownResult result) =>
+      _changes.add(MapEntry(login.trim(), result));
   static final Map<String, SteamCooldownResult> _cache = {};
   static final Map<String, SteamCooldownResult> _detailsCache = {};
   static SteamCooldownResult? cachedDetails(String login) =>
@@ -100,7 +163,6 @@ class SteamCooldownService {
       final decoded = jsonDecode(file.readAsStringSync());
       if (decoded is! Map<String, dynamic>) return;
 
-      final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       for (final entry in decoded.entries) {
         if (entry.value is! Map) continue;
         final raw = Map<String, dynamic>.from(entry.value as Map);
@@ -108,13 +170,21 @@ class SteamCooldownService {
         final expiresAt = int.tryParse(raw['expiresAt']?.toString() ?? '') ?? 0;
         final savedPenalty =
             int.tryParse(raw['penaltySeconds']?.toString() ?? '') ?? 0;
-        final remaining = expiresAt > 0
-            ? (expiresAt - now).clamp(0, 2147483647)
-            : savedPenalty;
 
         _cache[entry.key] = SteamCooldownResult(
           status: status,
-          penaltySeconds: remaining,
+          penaltySeconds: remainingPenaltySeconds(
+            savedPenalty,
+            int.tryParse(raw['penaltyReason']?.toString() ?? '') ?? 0,
+          ),
+          checkedAt: unixDate(raw['checkedAt']),
+          cooldownEndsAt:
+              savedPenalty > 0 && savedPenalty <= 2147483647 && expiresAt > 0
+              ? DateTime.fromMillisecondsSinceEpoch(
+                  expiresAt * 1000,
+                  isUtc: true,
+                )
+              : null,
           penaltyReason:
               int.tryParse(raw['penaltyReason']?.toString() ?? '') ?? 0,
           vacBanned: raw['vacBanned'] == true,
@@ -125,6 +195,7 @@ class SteamCooldownService {
           personaName: raw['personaName']?.toString(),
           cs2Level: (raw['cs2Level'] as num?)?.toInt(),
           prime: raw['prime'] is bool ? raw['prime'] as bool : null,
+          premierRating: (raw['premierRating'] as num?)?.toInt(),
         );
       }
     } catch (_) {
@@ -160,9 +231,12 @@ class SteamCooldownService {
         'personaName': result.personaName,
         'cs2Level': result.cs2Level,
         'prime': result.prime,
-        'checkedAt': now,
-        'expiresAt': result.penaltySeconds > 0
-            ? now + result.penaltySeconds
+        'premierRating': result.premierRating,
+        'checkedAt': result.checkedAt?.millisecondsSinceEpoch != null
+            ? result.checkedAt!.millisecondsSinceEpoch ~/ 1000
+            : now,
+        'expiresAt': result.cooldownEndsAt != null
+            ? result.cooldownEndsAt!.millisecondsSinceEpoch ~/ 1000
             : 0,
       };
       file.writeAsStringSync(jsonEncode(all));
@@ -264,7 +338,10 @@ class SteamCooldownService {
           .where((line) => line.trim().isNotEmpty)
           .toList();
       final decoded = jsonDecode(lines.last) as Map<String, dynamic>;
-      final result = SteamCooldownResult.fromJson(decoded);
+      final result = SteamCooldownResult.fromJson({
+        ...decoded,
+        'detailsOnly': detailsOnly,
+      });
       if (result.steamId64 != null && result.avatarUrl != null) {
         for (final reference in {
           SteamProfileService.loginReference(normalizedUser),
@@ -289,6 +366,9 @@ class SteamCooldownService {
         _persistSuccessfulResult(normalizedUser, result);
       }
 
+      if (result.security != null || result.steamId64 != null) {
+        _changes.add(MapEntry(normalizedUser, result));
+      }
       return result;
     } on TimeoutException {
       process?.kill();

@@ -1,7 +1,8 @@
 param(
     [string]$ProjectPath = $PSScriptRoot,
     [ValidateSet('release', 'pro')]
-    [string]$Channel = 'release'
+    [string]$Channel = 'release',
+    [switch]$PrivateUpdates
 )
 
 $ErrorActionPreference = "Stop"
@@ -20,7 +21,10 @@ if (-not $match.Success) {
 $version = $match.Groups[1].Value
 $updatesRepository = if ($Channel -eq 'pro') { 'GamerLocker/gamerlockerpro-releases' } else { 'GamerLocker/gamerlocker-releases' }
 $outputDirectory = if ($Channel -eq 'pro') { 'dist\pro' } else { 'dist' }
-$privateUpdates = if ($Channel -eq 'pro') { 'true' } else { 'false' }
+if ($PrivateUpdates -and $Channel -ne 'pro') {
+    throw "Atualizacoes privadas sao permitidas apenas no canal PRO."
+}
+$privateUpdatesDefine = if ($PrivateUpdates) { 'true' } else { 'false' }
 $appEdition = if ($Channel -eq 'pro') { 'PRO' } else { 'Beta' }
 
 Write-Host ""
@@ -44,7 +48,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host ""
 Write-Host "Gerando build Windows Release..." -ForegroundColor Cyan
 
-flutter build windows --release --dart-define-from-file=config/dev.json --dart-define=APP_VERSION=$version --dart-define=UPDATES_REPOSITORY=$updatesRepository --dart-define=PRIVATE_UPDATES=$privateUpdates
+flutter build windows --release --dart-define-from-file=config/dev.json --dart-define=APP_VERSION=$version --dart-define=UPDATES_REPOSITORY=$updatesRepository --dart-define=PRIVATE_UPDATES=$privateUpdatesDefine
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $exe = ".\build\windows\x64\runner\Release\GamerLocker.exe"

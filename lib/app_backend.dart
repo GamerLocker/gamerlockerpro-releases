@@ -1,11 +1,13 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'development_backend_config.dart';
+
 class AppBackend {
   AppBackend._();
 
-  static const String supabaseUrl = String.fromEnvironment('SUPABASE_URL');
+  static String supabaseUrl = const String.fromEnvironment('SUPABASE_URL');
 
-  static const String supabasePublishableKey = String.fromEnvironment(
+  static String supabasePublishableKey = const String.fromEnvironment(
     'SUPABASE_PUBLISHABLE_KEY',
   );
 
@@ -13,6 +15,12 @@ class AppBackend {
       supabaseUrl.isNotEmpty && supabasePublishableKey.isNotEmpty;
 
   static Future<void> initialize() async {
+    final config = await developmentBackendConfig(
+      definedUrl: supabaseUrl,
+      definedKey: supabasePublishableKey,
+    );
+    supabaseUrl = config.url;
+    supabasePublishableKey = config.key;
     if (!configured) {
       return;
     }

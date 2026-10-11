@@ -18,6 +18,16 @@ sealed class GcAccountStatus
     [ProtoMember(5)] public uint? PenaltyReason { get; set; }
     [ProtoMember(6)] public int VacBanned { get; set; }
     [ProtoMember(17)] public int? PlayerLevel { get; set; }
+    [ProtoMember(7)] public GcPlayerRanking? Ranking { get; set; }
+    [ProtoMember(20)] public List<GcPlayerRanking> Rankings { get; set; } = [];
+}
+
+[ProtoContract]
+sealed class GcPlayerRanking
+{
+    [ProtoMember(1)] public uint? AccountId { get; set; }
+    [ProtoMember(2)] public uint? RankId { get; set; }
+    [ProtoMember(6)] public uint? RankTypeId { get; set; }
 }
 
 [ProtoContract]
@@ -46,6 +56,12 @@ sealed class GcEconAccount
 
 static class GcWelcomeStatus
 {
+    public static uint? ReadPremier(IEnumerable<GcPlayerRanking> rankings, GcPlayerRanking? ranking, uint ownAccountId)
+    {
+        var all = ranking is null ? rankings : rankings.Append(ranking);
+        return all.FirstOrDefault(r => r.RankTypeId == 11 &&
+            (r.AccountId is null || r.AccountId == ownAccountId))?.RankId;
+    }
     public static bool? ReadPrime(CsgoGcClientWelcome welcome, ulong ownSteamId)
     {
         foreach (var cache in welcome.Caches.Where(c => c.Owner?.Id == ownSteamId))

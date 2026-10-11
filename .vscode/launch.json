@@ -1,0 +1,17 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "GamerLocker PRO (local)",
+      "request": "launch",
+      "type": "dart",
+      "deviceId": "windows",
+      "cwd": "${workspaceFolder}",
+      "toolArgs": [
+        "--dart-define-from-file=config/dev.json",
+        "--dart-define=UPDATES_REPOSITORY=GamerLocker/gamerlockerpro-releases",
+        "--dart-define=PRIVATE_UPDATES=false"
+      ]
+    }
+  ]
+}
