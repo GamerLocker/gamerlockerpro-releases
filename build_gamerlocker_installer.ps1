@@ -21,6 +21,7 @@ $version = $match.Groups[1].Value
 $updatesRepository = if ($Channel -eq 'pro') { 'GamerLocker/gamerlockerpro-releases' } else { 'GamerLocker/gamerlocker-releases' }
 $outputDirectory = if ($Channel -eq 'pro') { 'dist\pro' } else { 'dist' }
 $privateUpdates = if ($Channel -eq 'pro') { 'true' } else { 'false' }
+$appEdition = if ($Channel -eq 'pro') { 'PRO' } else { 'Beta' }
 
 Write-Host ""
 Write-Host "GamerLocker v$version" -ForegroundColor Cyan
@@ -103,7 +104,7 @@ New-Item -ItemType Directory -Force .\dist | Out-Null
 Write-Host ""
 Write-Host "Gerando instalador com Inno Setup..." -ForegroundColor Cyan
 
-& $iscc "/DMyAppVersion=$version" "/O$(Join-Path $ProjectPath $outputDirectory)" ".\installer\GamerLocker.iss"
+& $iscc "/DMyAppVersion=$version" "/DMyAppEdition=$appEdition" "/O$(Join-Path $ProjectPath $outputDirectory)" ".\installer\GamerLocker.iss"
 
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

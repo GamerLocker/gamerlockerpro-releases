@@ -1,6 +1,9 @@
 #ifndef MyAppVersion
   #error MyAppVersion is required. Use build_gamerlocker_installer.ps1.
 #endif
+#ifndef MyAppEdition
+  #define MyAppEdition "Beta"
+#endif
 
 #define MyAppName "GamerLocker"
 #define MyAppPublisher "GamerLocker"
@@ -10,7 +13,8 @@
 AppId={{46FB8EDB-DC3C-4B97-9147-F2D994872E17}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion} Beta
+AppVerName={#MyAppName} {#MyAppVersion} {#MyAppEdition}
+UninstallDisplayName={#MyAppName} {#MyAppVersion} {#MyAppEdition}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\GamerLocker
 DefaultGroupName=GamerLocker
