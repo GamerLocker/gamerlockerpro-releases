@@ -110,6 +110,17 @@ using (var inventory = System.Text.Json.JsonDocument.Parse("""
 Check(SteamAccountDetails.ParseBadgeNames("<div class=\"badge_title\">Test &amp; badge <span>level 2</span></div>").Single().Contains("Test & badge"),
     "Badge HTML title parsing failed");
 Console.WriteLine("PASS: inventory asset/description matching, medal classification and badge names.");
+var levelStatus = Decode<GcAccountStatus>([0x08, 0x2a, 0x88, 0x01, 0x02]);
+Check(levelStatus.PlayerLevel == 2 && Decode<GcAccountStatus>([0x08, 0x2a]).PlayerLevel is null,
+    "Absent CS2 level must not become a fabricated zero");
+var primeWelcome = new CsgoGcClientWelcome { Caches = [new GcSubscribedCache {
+    Owner = new GcCacheOwner { Id = 123 }, Objects = [new GcSubscribedType { TypeId = 7, Data = [[0x70, 0x01]] }]
+}] };
+Check(GcWelcomeStatus.ReadPrime(primeWelcome, 123) == true && GcWelcomeStatus.ReadPrime(primeWelcome, 124) is null,
+    "Prime metadata belongs to a different account");
+primeWelcome.Caches[0].Objects[0].Data[0] = [];
+Check(GcWelcomeStatus.ReadPrime(primeWelcome, 123) is null, "Missing Prime field cannot mean non-Prime");
+Console.WriteLine("PASS: nullable CS2 level and account-owned Prime metadata.");
 using (var flags = System.Text.Json.JsonDocument.Parse("[true,1,false,0]")) {
     Check(SteamAccountDetails.IsTrue(flags.RootElement[0]) && SteamAccountDetails.IsTrue(flags.RootElement[1]) &&
           !SteamAccountDetails.IsTrue(flags.RootElement[2]) && !SteamAccountDetails.IsTrue(flags.RootElement[3]),

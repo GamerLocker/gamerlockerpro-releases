@@ -302,6 +302,10 @@ final Map<String, String> _english = <String, String>{
   'Plano': 'Plan',
   'Seu plano': 'Your plan',
   'Ativo': 'Active',
+  'Prime: não confirmado': 'Prime: not confirmed',
+  'Prime ativo': 'Prime active',
+  'Sem Prime': 'Non-Prime',
+  'Competitivo: não confirmado': 'Competitive access: not confirmed',
   'Clique em Verificar para identificar o perfil Steam.':
       'Click Verify to identify the Steam profile.',
   'PRO vitalício — sem vencimento': 'Lifetime PRO — no expiration',
@@ -415,6 +419,8 @@ String gl(String text) {
   }
 
   Match? match;
+  match = RegExp(r'^Nível CS2: (\d+)$').firstMatch(text);
+  if (match != null) return 'CS2 level: ${match.group(1)}';
 
   match = RegExp(r'^(\d+) dias restantes de PRO$').firstMatch(text);
   if (match != null) {

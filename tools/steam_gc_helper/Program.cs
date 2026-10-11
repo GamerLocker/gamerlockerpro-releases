@@ -311,6 +311,8 @@ manager.Subscribe<SteamGameCoordinator.MessageCallback>(callback =>
                     PenaltySeconds: checked((int)(account!.PenaltySeconds ?? 0)),
                     PenaltyReason: checked((int)(account.PenaltyReason ?? 0)),
                     VacBanned: account.VacBanned != 0,
+                    Cs2Level: account.PlayerLevel,
+                    Prime: GcWelcomeStatus.ReadPrime(welcome, client.SteamID.ConvertToUInt64()),
                     Message: account.PenaltySeconds > 0 ? "Cooldown ativo." : "Sem cooldown ativo."));
                 return;
             }
@@ -365,6 +367,7 @@ manager.Subscribe<SteamGameCoordinator.MessageCallback>(callback =>
             PenaltySeconds: checked((int)body.PenaltySeconds),
             PenaltyReason: checked((int)body.PenaltyReason),
             VacBanned: body.VacBanned != 0,
+            Cs2Level: body.PlayerLevel,
             Message: body.PenaltySeconds > 0 ? "Cooldown ativo." : "Sem cooldown ativo."));
     }
     catch (Exception ex)
@@ -465,7 +468,9 @@ sealed record Result(
     string? SteamId64 = null,
     string? AvatarUrl = null,
     string? PersonaName = null,
-    SteamDetails? AccountDetails = null);
+    SteamDetails? AccountDetails = null,
+    int? Cs2Level = null,
+    bool? Prime = null);
 
 sealed class GuardCodeRequiredException : Exception
 {
@@ -544,6 +549,7 @@ sealed class CsgoMatchmakingClientHello : IExtensible
 [ProtoContract]
 sealed class CsgoMatchmakingGcHello : IExtensible
 {
+    [ProtoMember(17)] public int? PlayerLevel { get; set; }
     [ProtoMember(4)] public uint PenaltySeconds { get; set; }
     [ProtoMember(5)] public uint PenaltyReason { get; set; }
     [ProtoMember(6)] public int VacBanned { get; set; }

@@ -18,6 +18,8 @@ class SteamCooldownResult {
   final String? avatarUrl;
   final String? personaName;
   final Map<String, dynamic>? accountDetails;
+  final int? cs2Level;
+  final bool? prime;
 
   const SteamCooldownResult({
     required this.status,
@@ -33,6 +35,8 @@ class SteamCooldownResult {
     this.avatarUrl,
     this.personaName,
     this.accountDetails,
+    this.cs2Level,
+    this.prime,
   });
 
   bool get hasCooldown => status == 'ok' && penaltySeconds > 0;
@@ -54,6 +58,8 @@ class SteamCooldownResult {
       steamId64: json['steamId64']?.toString(),
       avatarUrl: json['avatarUrl']?.toString(),
       personaName: json['personaName']?.toString(),
+      cs2Level: (json['cs2Level'] as num?)?.toInt(),
+      prime: json['prime'] is bool ? json['prime'] as bool : null,
       accountDetails: json['accountDetails'] is Map
           ? Map<String, dynamic>.from(json['accountDetails'] as Map)
           : null,
@@ -116,6 +122,8 @@ class SteamCooldownService {
           steamId64: raw['steamId64']?.toString(),
           avatarUrl: raw['avatarUrl']?.toString(),
           personaName: raw['personaName']?.toString(),
+          cs2Level: (raw['cs2Level'] as num?)?.toInt(),
+          prime: raw['prime'] is bool ? raw['prime'] as bool : null,
         );
       }
     } catch (_) {
@@ -149,6 +157,8 @@ class SteamCooldownService {
         'steamId64': result.steamId64,
         'avatarUrl': result.avatarUrl,
         'personaName': result.personaName,
+        'cs2Level': result.cs2Level,
+        'prime': result.prime,
         'checkedAt': now,
         'expiresAt': result.penaltySeconds > 0
             ? now + result.penaltySeconds

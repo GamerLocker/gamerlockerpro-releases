@@ -2866,6 +2866,14 @@ class _SteamCooldownSummaryState extends State<SteamCooldownSummary> {
                     'Motivo GC: ${current.penaltyReason}',
                     style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
                   ),
+                if (current?.status == 'ok') ...[
+                  Text(current!.prime == null ? 'Prime: não confirmado'
+                      : current.prime! ? 'Prime ativo' : 'Sem Prime',
+                      style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
+                  if (current.cs2Level != null && current.cs2Level! > 0)
+                    Text('Nível CS2: ${current.cs2Level}', style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
+                  Text('Competitivo: não confirmado', style: TextStyle(fontSize: 10, color: Colors.grey.shade400)),
+                ],
                 if (current?.sessionWarning != null)
                   Text(
                     current!.sessionWarning!,

@@ -1,4 +1,4 @@
-param([switch]$JoinGamerLockerGroup, [switch]$AccountDetails)
+param([switch]$JoinGamerLockerGroup, [switch]$AccountDetails, [switch]$Classification)
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security
 $helper = Join-Path $PSScriptRoot 'publish\GamerLocker.SteamGcHelper.exe'
@@ -22,6 +22,10 @@ foreach ($file in Get-ChildItem -LiteralPath $directory -Filter '*.bin') {
                 BadgesStatus=$response.accountDetails.badgesStatus; Badges=@($response.accountDetails.badges).Count;
                 InventoryStatus=$response.accountDetails.inventoryStatus; Items=@($response.accountDetails.inventory).Count;
                 Complete=$response.accountDetails.inventoryComplete}
+        } elseif ($Classification) {
+            $response = ($request | & $helper) | ConvertFrom-Json
+            [pscustomobject]@{Status=$response.status; Cs2Level=$response.cs2Level;
+                Prime=$response.prime; VacBanned=$response.vacBanned; PenaltySeconds=$response.penaltySeconds}
         } else { $request | & $helper }
     } finally {
         if ($plain) { [Array]::Clear($plain, 0, $plain.Length) }
