@@ -302,6 +302,11 @@ final Map<String, String> _english = <String, String>{
   'Plano': 'Plan',
   'Seu plano': 'Your plan',
   'Ativo': 'Active',
+  'PRO vitalício — sem vencimento': 'Lifetime PRO — no expiration',
+  'Seu período PRO terminou.': 'Your PRO period has ended.',
+  'Válido até': 'Valid until',
+  'Ative uma chave por vez. Os períodos são somados à validade atual.':
+      'Activate one key at a time. Periods are added to your current expiration date.',
   'Limite FREE atingido.': 'FREE limit reached.',
   'Contas ilimitadas': 'Unlimited accounts',
   'GamerLocker PRO': 'GamerLocker PRO',
@@ -408,6 +413,12 @@ String gl(String text) {
   }
 
   Match? match;
+
+  match = RegExp(r'^(\d+) dias restantes de PRO$').firstMatch(text);
+  if (match != null) {
+    final count = int.parse(match.group(1)!);
+    return '$count ${count == 1 ? 'day' : 'days'} of PRO remaining';
+  }
 
   match = RegExp(r'^Olá, (.+)$').firstMatch(text);
   if (match != null) {

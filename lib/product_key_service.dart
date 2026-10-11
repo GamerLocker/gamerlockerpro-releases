@@ -7,6 +7,7 @@ class ProductKeyRedeemResult {
   final String message;
   final int daysAdded;
   final DateTime? newProUntil;
+  final bool isLifetime;
 
   const ProductKeyRedeemResult({
     required this.ok,
@@ -14,6 +15,7 @@ class ProductKeyRedeemResult {
     required this.message,
     required this.daysAdded,
     required this.newProUntil,
+    this.isLifetime = false,
   });
 
   factory ProductKeyRedeemResult.fromMap(Map<String, dynamic> data) {
@@ -25,6 +27,7 @@ class ProductKeyRedeemResult {
       newProUntil: data['new_pro_until'] == null
           ? null
           : DateTime.tryParse(data['new_pro_until'].toString()),
+      isLifetime: data['is_lifetime'] == true,
     );
   }
 }

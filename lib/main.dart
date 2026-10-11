@@ -10,6 +10,7 @@ import 'backup_service.dart';
 import 'plan_service.dart';
 import 'purchase_pro_screen.dart';
 import 'product_key_service.dart';
+import 'plan_validity.dart';
 import 'app_backend.dart';
 import 'auth_screens.dart';
 import 'steam_profile_service.dart';
@@ -5927,6 +5928,8 @@ class PlanScreen extends StatelessWidget {
                               ),
                             ),
                           ],
+                          const SizedBox(height: 12),
+                          PlanValidity(plan: plan),
                         ],
                       ),
                     ),
@@ -6278,8 +6281,10 @@ class _ActivateKeyScreenState extends State<ActivateKeyScreen> {
             icon: const Icon(Icons.workspace_premium),
             title: const Text('GamerLocker PRO ativado'),
             content: Text(
-              '${result.daysAdded} dias adicionados.'
-              '${expiresText.isEmpty ? '' : '\n\nValido ate: $expiresText'}',
+              result.isLifetime
+                  ? 'PRO vitalício — sem vencimento'
+                  : '${result.daysAdded} dias adicionados.'
+                    '${expiresText.isEmpty ? '' : '\n\nValido ate: $expiresText'}',
             ),
             actions: [
               FilledButton(
@@ -6297,7 +6302,7 @@ class _ActivateKeyScreenState extends State<ActivateKeyScreen> {
         return;
       }
 
-      Navigator.pop(context);
+      controller.clear();
     } catch (e) {
       if (!mounted) {
         return;
@@ -6343,6 +6348,13 @@ class _ActivateKeyScreenState extends State<ActivateKeyScreen> {
                   style: TextStyle(color: Colors.grey.shade400),
                 ),
                 const SizedBox(height: 28),
+                ValueListenableBuilder<PlanInfo>(
+                  valueListenable: PlanService.current,
+                  builder: (context, plan, _) => PlanValidity(plan: plan),
+                ),
+                const SizedBox(height: 12),
+                const Text('Ative uma chave por vez. Os períodos são somados à validade atual.'),
+                const SizedBox(height: 12),
                 TextField(
                   controller: controller,
                   inputFormatters: [UpperCaseTextFormatter()],

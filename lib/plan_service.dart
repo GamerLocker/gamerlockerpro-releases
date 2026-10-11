@@ -9,16 +9,30 @@ enum PlanTier { free, pro }
 class PlanInfo {
   final PlanTier tier;
   final DateTime? expiresAt;
+  final bool isLifetime;
 
-  const PlanInfo({required this.tier, this.expiresAt});
+  const PlanInfo({required this.tier, this.expiresAt, this.isLifetime = false});
 
-  bool get isPro => gamerLockerMicrosoftStoreBuild || tier == PlanTier.pro;
+  bool get isPro =>
+      gamerLockerMicrosoftStoreBuild ||
+      (tier == PlanTier.pro &&
+          (isLifetime ||
+              expiresAt == null ||
+              expiresAt!.isAfter(DateTime.now())));
+
+  int? remainingDaysAt(DateTime now) {
+    if (isLifetime || expiresAt == null) return null;
+    final remaining = expiresAt!.difference(now).inMicroseconds;
+    return remaining <= 0
+        ? 0
+        : (remaining / const Duration(days: 1).inMicroseconds).ceil();
+  }
 
   String get label {
     if (gamerLockerMicrosoftStoreBuild) {
       return 'STORE';
     }
-    switch (tier) {
+    switch (isPro ? PlanTier.pro : PlanTier.free) {
       case PlanTier.free:
         return 'FREE';
       case PlanTier.pro:

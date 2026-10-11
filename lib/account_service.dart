@@ -81,6 +81,7 @@ class AccountService {
     PlanService.current.value = PlanInfo(
       tier: plan == 'pro' ? PlanTier.pro : PlanTier.free,
       expiresAt: proUntil,
+      isLifetime: data['is_lifetime'] == true,
     );
   }
 }
